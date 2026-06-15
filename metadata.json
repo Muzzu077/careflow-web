@@ -1,0 +1,6 @@
+{
+  "name": "CareFlow",
+  "description": "Smart Hospital Management System providing patient-to-doctor-to-lab workflows, multi-role logins, appointment booking, real-time chat, and admin diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
