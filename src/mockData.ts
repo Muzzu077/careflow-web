@@ -26,7 +26,11 @@ export class MockDB {
     const { data } = await supabase.from('doctors').select('*');
     return (data || []).map(d => ({
       ...d,
-      experience: d.experience ? `${d.experience} years` : "0 years"
+      experience: d.experience ? `${d.experience} years` : "0 years",
+      available_days: d.available_days || 'Monday,Tuesday,Wednesday,Thursday,Friday',
+      available_timings: d.available_timings || '09:00-13:00,14:00-18:00',
+      token_limit: d.token_limit || 50,
+      token_type: d.token_type || 'PER_DAY'
     }));
   }
 
@@ -116,7 +120,11 @@ export class MockDB {
       hospital_id: d.hospital_id,
       city: d.city,
       area: d.area,
-      approved: d.approved
+      approved: d.approved,
+      available_days: d.available_days,
+      available_timings: d.available_timings,
+      token_limit: d.token_limit,
+      token_type: d.token_type
     }));
     await supabase.from('doctors').upsert(mapped);
   }

@@ -38,7 +38,8 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
   const [selectedHospitalId, setSelectedHospitalId] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("General Physician");
   const [selectedDoctorId, setSelectedDoctorId] = useState("");
-  const [selectedTimeSlot, setSelectedTimeSlot] = useState("09:15");
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0]);
+  const [selectedTimeSlot, setSelectedTimeSlot] = useState("");
   const [bookingSuccess, setBookingSuccess] = useState(false);
 
   // Chat conversation state
@@ -104,8 +105,8 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
 
   // Action: Book Appointment
   const handleConfirmBooking = async () => {
-    if (!selectedHospitalId || !selectedDoctorId) {
-      alert("Please select both a clinic facility and medical doctor first.");
+    if (!selectedHospitalId || !selectedDoctorId || !selectedDate || !selectedTimeSlot) {
+      alert("Please select facility, doctor, date, and a valid timing slot.");
       return;
     }
 
@@ -121,8 +122,11 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
       return;
     }
 
+    const slots = getDoctorSlots(docExt);
+    const slotIndex = slots.indexOf(selectedTimeSlot);
+    const tokenVal = slotIndex !== -1 ? slotIndex + 1 : 1;
+
     const appts = await MockDB.getAppointments();
-    const currentToken = 100 + appts.filter(a => a.doctor_id === selectedDoctorId).length + 1;
 
     const newAppointment: Appointment = {
       id: "apt-" + Math.random().toString(36).substring(2, 9),
@@ -133,9 +137,9 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
       doctor_specialization: docExt.specialization,
       hospital_id: hospital.id,
       hospital_name: hospital.name,
-      date: new Date().toISOString().split("T")[0], // Book for Today default
+      date: selectedDate,
       time: selectedTimeSlot,
-      token: currentToken,
+      token: tokenVal,
       status: AppointmentStatus.BOOKED,
       created_at: new Date().toISOString()
     };
@@ -144,7 +148,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     await MockDB.saveAppointments(appts);
 
     // Save notification
-    await MockDB.addNotification(user.id, "Appointment Placed", `Your appointment token #${currentToken} under ${docProfile.full_name} is confirmed.`);
+    await MockDB.addNotification(user.id, "Appointment Placed", `Your appointment token #${tokenVal} under ${docProfile.full_name} is confirmed.`);
     
     // Create automatic private chat with doctor if none exists
     const currentChats = await MockDB.getChats();
@@ -231,6 +235,41 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
   const getDocName = (docId: string) => {
     const prof = profilesList.find(p => p.id === docId);
     return prof ? prof.full_name : "Doctor";
+  };
+
+  const getDoctorSlots = (doc: DoctorExt) => {
+    const timings = doc.available_timings || '09:00-13:00,14:00-18:00';
+    const parts = timings.split(',');
+    const slots: string[] = [];
+    parts.forEach(part => {
+      const times = part.trim().split('-');
+      if (times.length === 2) {
+        const [start, end] = times;
+        const [startH, startM] = start.split(':').map(Number);
+        const [endH, endM] = end.split(':').map(Number);
+        let currentH = startH;
+        let currentM = startM;
+        while (currentH < endH || (currentH === endH && currentM < endM)) {
+          const timeStr = `${String(currentH).padStart(2, '0')}:${String(currentM).padStart(2, '0')}`;
+          slots.push(timeStr);
+          currentM += 15;
+          if (currentM >= 60) {
+            currentH += Math.floor(currentM / 60);
+            currentM = currentM % 60;
+          }
+        }
+      }
+    });
+    return slots.length > 0 ? slots : ["09:00", "10:00", "11:00", "14:00", "15:00", "16:00"];
+  };
+
+  const isDoctorAvailableOnDate = (doc: DoctorExt, dateStr: string) => {
+    if (!dateStr) return false;
+    const date = new Date(dateStr);
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const selectedDayName = days[date.getDay()];
+    const availableDaysList = (doc.available_days || 'Monday,Tuesday,Wednesday,Thursday,Friday').split(',');
+    return availableDaysList.includes(selectedDayName);
   };
 
   const hasNotifsCount = notifications.filter(n => !n.read).length;
@@ -581,35 +620,83 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                   )}
                 </div>
 
-                {/* Step 6: Available Tokens */}
+                {/* Step 6 & 7: Date & Token Slot Selection */}
                 {selectedDoctorId && (
-                  <div className="bg-[#f8f9ff] p-4 rounded-lg border border-teal-200">
-                    <label className="block text-[10px] font-black text-[#006591] uppercase mb-2">Step 6: Select Available Time & Virtual Token Slot</label>
-                    <div className="flex flex-wrap gap-2 text-center">
-                      {["09:15", "10:30", "11:45", "14:30", "15:45", "16:15"].map(time => (
-                        <button
-                          key={time}
-                          type="button"
-                          onClick={() => setSelectedTimeSlot(time)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
-                            selectedTimeSlot === time 
-                              ? "bg-teal-600 text-white border-teal-600" 
-                              : "bg-white text-slate-700 hover:bg-slate-50 border-[#bec8d2]"
-                          }`}
-                        >
-                          {time} (Token Slot #{100 + Math.floor(Math.random() * 8)})
-                        </button>
-                      ))}
+                  <div className="space-y-4">
+                    <div className="bg-[#f8f9ff] p-4 rounded-lg border border-slate-200">
+                      <label className="block text-[10px] font-black text-slate-500 uppercase mb-1">Step 6: Select Appointment Date</label>
+                      <input 
+                        type="date"
+                        required
+                        value={selectedDate}
+                        min={new Date().toISOString().split("T")[0]}
+                        onChange={(e) => {
+                          setSelectedDate(e.target.value);
+                          setSelectedTimeSlot("");
+                        }}
+                        className="px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none focus:border-[#006591]"
+                      />
                     </div>
+
+                    {(() => {
+                      const doc = doctorsList.find(d => d.id === selectedDoctorId);
+                      if (!doc) return null;
+                      const isAvailable = isDoctorAvailableOnDate(doc, selectedDate);
+                      
+                      if (!isAvailable) {
+                        return (
+                          <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3 rounded-lg text-xs font-semibold">
+                            ⚠️ Doctor is not available on this day of the week. Please select another date. (Available: {doc.available_days || 'Monday-Friday'})
+                          </div>
+                        );
+                      }
+
+                      const slots = getDoctorSlots(doc);
+                      
+                      return (
+                        <div className="bg-[#f8f9ff] p-4 rounded-lg border border-teal-200">
+                          <label className="block text-[10px] font-black text-[#006591] uppercase mb-2">Step 7: Choose Time & Token Slot</label>
+                          <div className="flex flex-wrap gap-2 text-center">
+                            {slots.map((time, idx) => {
+                              const tokenNumber = idx + 1;
+                              const isBooked = appointments.some(a => 
+                                a.doctor_id === selectedDoctorId && 
+                                a.date === selectedDate && 
+                                a.time === time && 
+                                a.status !== AppointmentStatus.CANCELLED
+                              );
+
+                              return (
+                                <button
+                                  key={time}
+                                  type="button"
+                                  disabled={isBooked}
+                                  onClick={() => setSelectedTimeSlot(time)}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
+                                    isBooked 
+                                      ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed" 
+                                      : selectedTimeSlot === time 
+                                        ? "bg-teal-600 text-white border-teal-600" 
+                                        : "bg-white text-slate-700 hover:bg-slate-50 border-[#bec8d2]"
+                                  }`}
+                                >
+                                  {time} {isBooked ? "(Booked)" : `(Token #${tokenNumber})`}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 
-                {/* Step 7: Confirmation actions */}
-                {selectedDoctorId && (
+                {/* Step 8: Confirmation actions */}
+                {selectedDoctorId && selectedTimeSlot && (
                   <div className="pt-4 border-t border-slate-100 flex justify-end gap-3">
                     <button 
                       type="button" 
-                      onClick={() => setSelectedDoctorId("")} 
+                      onClick={() => { setSelectedDoctorId(""); setSelectedTimeSlot(""); }} 
                       className="text-xs text-slate-500 hover:underline px-4 py-2"
                     >
                       Reset selection
@@ -619,7 +706,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                       onClick={handleConfirmBooking}
                       className="bg-emerald-600 text-white text-xs font-bold px-6 py-2.5 rounded-lg hover:bg-emerald-700 flex items-center gap-2"
                     >
-                      <CheckCircle className="w-4 h-4" /> Step 7: Complete Secure Booking
+                      <CheckCircle className="w-4 h-4" /> Complete Secure Booking
                     </button>
                   </div>
                 )}

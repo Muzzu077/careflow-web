@@ -37,9 +37,6 @@ export default function App() {
   ]);
   const [isTyping, setIsTyping] = useState(false);
 
-  // Demo selector dropdown
-  const [showDemoMenu, setShowDemoMenu] = useState(false);
-
   // Restore user session on mount
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -48,8 +45,10 @@ export default function App() {
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setCurrentView("reset-password");
+      } else if (session?.user) {
         restoreUserSession(session.user.id);
       } else {
         setCurrentUser(null);
@@ -117,44 +116,6 @@ export default function App() {
     setBotMessages(prev => [...prev, { sender: "bot", text: ans, timestamp: "Now" }]);
   };
 
-  const handleQuickLogin = async (email: string, roleName: UserRole) => {
-    const pwd = email === "pavaneshvuchuru@gmail.com" ? "V.pavanesh$13" : "password123";
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password: pwd
-      });
-      if (error) {
-        alert("Quick Login failed: " + error.message);
-        return;
-      }
-      
-      const { data: dbUser } = await supabase
-        .from("users")
-        .select("*")
-        .eq("id", data.user?.id)
-        .maybeSingle();
-        
-      if (dbUser) {
-        handleLoginSuccess(dbUser);
-        setShowDemoMenu(false);
-      } else {
-        if (email.toLowerCase() === "pavaneshvuchuru@gmail.com") {
-          handleLoginSuccess({
-            id: data.user?.id || "admin-id",
-            email: email.trim(),
-            role: UserRole.MAIN_ADMIN,
-            status: "ACTIVE" as any,
-            created_at: new Date().toISOString()
-          });
-          setShowDemoMenu(false);
-        }
-      }
-    } catch (e: any) {
-      alert("Quick Login error: " + e.message);
-    }
-  };
-
   return (
     <div id="careflow-application-root" className="min-h-screen flex flex-col font-sans text-[#111] bg-[#f8f9ff]">
       
@@ -171,88 +132,6 @@ export default function App() {
             <span className="font-black text-sm tracking-tight text-[#006591]">CAREFLOW</span>
             <span className="text-[10px] text-slate-400 block -mt-1 font-semibold">Hospital Systems</span>
           </div>
-        </div>
-
-        {/* Demo profiles dropdown descriptor */}
-        <div className="relative">
-          <button 
-            onClick={() => setShowDemoMenu(!showDemoMenu)}
-            className="bg-[#eff4ff] hover:bg-[#e5eeff] text-[#006591] text-[11px] font-black tracking-wide uppercase px-3 py-1.5 rounded border border-[#0ea5e9]/20 flex items-center gap-1.5 transition-all"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            Launch Demo Accounts Profile
-            <ChevronDown className="w-3 h-3" />
-          </button>
-
-          {showDemoMenu && (
-            <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-2xl border border-[#bec8d2] overflow-hidden z-50">
-              <div className="p-3 bg-slate-900 text-white text-[10px] font-black uppercase tracking-wider">
-                Select Portal to test:
-              </div>
-              <div className="divide-y divide-slate-100 text-xs">
-                <button 
-                  onClick={() => handleQuickLogin("sarah@gmail.com", UserRole.PATIENT)}
-                  className="w-full text-left p-2.5 hover:bg-slate-50 flex items-center justify-between"
-                >
-                  <div>
-                    <span className="font-bold text-[#0b1c30] block">Patient Portal</span>
-                    <span className="text-[9px] text-[#3e4850]">sarah@gmail.com / password123</span>
-                  </div>
-                  <span className="text-[9px] font-black text-[#0ea5e9] uppercase">Sarah</span>
-                </button>
-                <button 
-                  onClick={() => handleQuickLogin("emily.chen@careflow.com", UserRole.DOCTOR)}
-                  className="w-full text-left p-2.5 hover:bg-slate-50 flex items-center justify-between"
-                >
-                  <div>
-                    <span className="font-bold text-[#0b1c30] block">Doctor Portal</span>
-                    <span className="text-[9px] text-[#3e4850]">emily.chen@careflow.com / password123</span>
-                  </div>
-                  <span className="text-[9px] font-black text-[#0ea5e9] uppercase">Dr. Emily</span>
-                </button>
-                <button 
-                  onClick={() => handleQuickLogin("receptionist@careflow.com", UserRole.RECEPTIONIST)}
-                  className="w-full text-left p-2.5 hover:bg-slate-50 flex items-center justify-between"
-                >
-                  <div>
-                    <span className="font-bold text-[#0b1c30] block">Reception Desk</span>
-                    <span className="text-[9px] text-[#3e4850]">receptionist@careflow.com / password123</span>
-                  </div>
-                  <span className="text-[9px] font-black text-[#0ea5e9] uppercase">Tobias Desk</span>
-                </button>
-                <button 
-                  onClick={() => handleQuickLogin("lab@careflow.com", UserRole.LAB_TECHNICIAN)}
-                  className="w-full text-left p-2.5 hover:bg-slate-50 flex items-center justify-between"
-                >
-                  <div>
-                    <span className="font-bold text-[#0b1c30] block">Lab Technician</span>
-                    <span className="text-[9px] text-[#3e4850]">lab@careflow.com / password123</span>
-                  </div>
-                  <span className="text-[9px] font-black text-[#0ea5e9] uppercase">Tobias Lab</span>
-                </button>
-                <button 
-                  onClick={() => handleQuickLogin("hadmin@careflow.com", UserRole.HOSPITAL_ADMIN)}
-                  className="w-full text-left p-2.5 hover:bg-slate-50 flex items-center justify-between"
-                >
-                  <div>
-                    <span className="font-bold text-[#0b1c30] block">Hospital Admin</span>
-                    <span className="text-[9px] text-[#3e4850]">hadmin@careflow.com / password123</span>
-                  </div>
-                  <span className="text-[9px] font-black text-[#0ea5e9] uppercase">Approve Staff</span>
-                </button>
-                <button 
-                  onClick={() => handleQuickLogin("pavaneshvuchuru@gmail.com", UserRole.MAIN_ADMIN)}
-                  className="w-full text-left p-2.5 hover:bg-slate-50 flex items-center justify-between"
-                >
-                  <div>
-                    <span className="font-bold text-red-700 block flex items-center gap-1">Super Admin (Pavanesh)</span>
-                    <span className="text-[9px] text-[#3e4850]">pavaneshvuchuru@gmail.com / V.pavanesh$13</span>
-                  </div>
-                  <span className="text-[9px] font-black text-rose-500 uppercase">Master Admin</span>
-                </button>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Traditional Nav buttons */}
@@ -296,8 +175,15 @@ export default function App() {
           />
         )}
 
-        {(currentView === "login" || currentView === "register-patient") && !currentUser && (
+        {(currentView === "login" || currentView === "register-patient" || currentView === "reset-password") && !currentUser && (
           <Auth 
+            initialMode={
+              currentView === "register-patient" 
+                ? "register" 
+                : currentView === "reset-password" 
+                ? "reset" 
+                : "login"
+            }
             onLoginSuccess={handleLoginSuccess}
             onNavigateLanding={() => setCurrentView("home")}
           />

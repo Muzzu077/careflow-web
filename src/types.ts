@@ -69,6 +69,10 @@ export interface DoctorExt {
   city: string;
   area: string;
   approved: boolean;
+  available_days?: string;
+  available_timings?: string;
+  token_limit?: number;
+  token_type?: string;
 }
 
 export interface ReceptionistExt {

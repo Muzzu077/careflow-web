@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { MockDB } from "./mockData";
-import { User, Appointment, Prescription, PrescriptionItem, LabRequest, Notification, Chat, Message, UserRole, AppointmentStatus, LabRequestStatus, Profile } from "./types";
+import { User, Appointment, Prescription, PrescriptionItem, LabRequest, Notification, Chat, Message, UserRole, AppointmentStatus, LabRequestStatus, Profile, DoctorExt } from "./types";
 import { 
   Heart, Calendar, FileText, ClipboardList, Send, MapPin, 
   User as UserIcon, LogOut, CheckCircle2, Clock, AlertCircle, 
@@ -13,8 +13,8 @@ interface DoctorProps {
 }
 
 export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
-  // Tabs: 'queue' | 'consult' | 'labs' | 'chats' | 'prescriptions'
-  const [activeTab, setActiveTab] = useState<"queue" | "consult" | "labs" | "chats" | "prescriptions">("queue");
+  // Tabs: 'queue' | 'consult' | 'labs' | 'chats' | 'prescriptions' | 'availability'
+  const [activeTab, setActiveTab] = useState<"queue" | "consult" | "labs" | "chats" | "prescriptions" | "availability">("queue");
 
   // Core records
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -22,6 +22,14 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
   const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [doctorRecord, setDoctorRecord] = useState<DoctorExt | null>(null);
+
+  // Availability Settings States
+  const [availableDays, setAvailableDays] = useState<string[]>([]);
+  const [availableTimings, setAvailableTimings] = useState("09:00-13:00,14:00-18:00");
+  const [tokenLimit, setTokenLimit] = useState(50);
+  const [tokenType, setTokenType] = useState("PER_DAY");
+  const [availabilitySuccess, setAvailabilitySuccess] = useState(false);
 
   // Consultation Form States
   const [symptoms, setSymptoms] = useState("");
@@ -60,6 +68,8 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     const allMsgs = await MockDB.getMessages();
     const allProfs = await MockDB.getProfiles();
     const foundProfile = allProfs.find(p => p.id === user.id) || { full_name: "Dr. Emily Chen" };
+    const doctors = await MockDB.getDoctors();
+    const currentDoc = doctors.find(d => d.id === user.id) || null;
 
     setAppointments(allAppts);
     setPrescriptions(allPrescs);
@@ -67,6 +77,14 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     setMessages(allMsgs);
     setProfiles(allProfs);
     setDocProfile(foundProfile);
+    setDoctorRecord(currentDoc);
+
+    if (currentDoc) {
+      setAvailableDays(currentDoc.available_days ? currentDoc.available_days.split(',') : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+      setAvailableTimings(currentDoc.available_timings || '09:00-13:00,14:00-18:00');
+      setTokenLimit(currentDoc.token_limit || 50);
+      setTokenType(currentDoc.token_type || 'PER_DAY');
+    }
 
     if (allChats.length > 0 && !activeChatId) {
       setActiveChatId(allChats[0].id);
@@ -237,6 +255,31 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     loadDatabase();
   };
 
+  const handleSaveAvailability = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!doctorRecord) return;
+
+    const updatedDoctor: DoctorExt = {
+      ...doctorRecord,
+      available_days: availableDays.join(','),
+      available_timings: availableTimings,
+      token_limit: tokenLimit,
+      token_type: tokenType
+    };
+
+    const allDoctors = await MockDB.getDoctors();
+    const index = allDoctors.findIndex(d => d.id === user.id);
+    if (index !== -1) {
+      allDoctors[index] = updatedDoctor;
+    } else {
+      allDoctors.push(updatedDoctor);
+    }
+    await MockDB.saveDoctors(allDoctors);
+    setDoctorRecord(updatedDoctor);
+    setAvailabilitySuccess(true);
+    setTimeout(() => setAvailabilitySuccess(false), 2000);
+  };
+
   const checkedInCount = appointments.filter(a => a.status === AppointmentStatus.CHECKED_IN).length;
   const currentChatMsgs = messages.filter(m => m.chat_id === activeChatId);
 
@@ -308,6 +351,18 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
             >
               <MessageSquare className="w-4 h-4" />
               Patient Chat Rooms
+            </button>
+
+            <button
+              onClick={() => setActiveTab("availability")}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left ${
+                activeTab === "availability" 
+                  ? "bg-[#006591] text-white shadow-xs" 
+                  : "text-[#3e4850] hover:bg-[#eff4ff] hover:text-[#0b1c30]"
+              }`}
+            >
+              <Clock className="w-4 h-4" />
+              Availability Settings
             </button>
           </nav>
         </div>
@@ -723,6 +778,96 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
               </div>
 
             </div>
+          </div>
+        )}
+
+        {/* AVAILABILITY SETTINGS TAB */}
+        {activeTab === "availability" && (
+          <div className="space-y-6">
+            <div>
+              <h1 className="text-2xl font-black text-[#0b1c30]">Consultation Availability & Token Configuration</h1>
+              <p className="text-xs text-[#3e4850]">Define weekly visiting days, slot timings, and hourly/daily patient token limits.</p>
+            </div>
+
+            <form onSubmit={handleSaveAvailability} className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs max-w-2xl space-y-6">
+              {availabilitySuccess && (
+                <div className="bg-[#6cf8bb]/20 border-l-4 border-emerald-500 p-3 rounded flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <p className="text-xs font-bold text-emerald-800">Availability configurations successfully saved and synchronized.</p>
+                </div>
+              )}
+
+              {/* Day selection checkboxes */}
+              <div className="space-y-2">
+                <label className="block text-xs font-extrabold text-[#3e4850] uppercase">Available Weekly Days</label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(day => (
+                    <label key={day} className="flex items-center gap-2 text-xs font-bold text-slate-700 bg-slate-50 p-2 border border-slate-200/50 rounded cursor-pointer hover:bg-slate-100/55 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={availableDays.includes(day)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setAvailableDays(prev => [...prev, day]);
+                          } else {
+                            setAvailableDays(prev => prev.filter(d => d !== day));
+                          }
+                        }}
+                        className="rounded text-[#006591] focus:ring-[#006591]"
+                      />
+                      {day}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Available timings */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="block text-xs font-extrabold text-[#3e4850] uppercase">Consulting Hours</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. 09:00-13:00,14:00-18:00"
+                    value={availableTimings}
+                    onChange={(e) => setAvailableTimings(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                  />
+                  <span className="text-[10px] text-slate-400 block">Comma separated start-end hours (24-hour format).</span>
+                </div>
+
+                {/* Token Configuration */}
+                <div className="space-y-1">
+                  <label className="block text-xs font-extrabold text-[#3e4850] uppercase">Token Limit Mode</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      required
+                      min={1}
+                      value={tokenLimit}
+                      onChange={(e) => setTokenLimit(parseInt(e.target.value) || 0)}
+                      className="w-24 px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                    />
+                    <select
+                      value={tokenType}
+                      onChange={(e) => setTokenType(e.target.value)}
+                      className="flex-1 px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none focus:border-[#006591]"
+                    >
+                      <option value="PER_HOUR">Patients Per Hour</option>
+                      <option value="PER_DAY">Tokens Per Day</option>
+                    </select>
+                  </div>
+                  <span className="text-[10px] text-slate-400 block">Limit booking slots automatically based on rate parameters.</span>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-[#006591] hover:bg-[#004c6e] text-white font-bold py-2.5 rounded text-xs transition-colors shadow-sm"
+              >
+                Save Availability Configuration
+              </button>
+            </form>
           </div>
         )}
 

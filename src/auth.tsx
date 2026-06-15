@@ -10,6 +10,7 @@ import {
 interface AuthProps {
   onLoginSuccess: (user: any) => void;
   onNavigateLanding: () => void;
+  initialMode?: "login" | "register" | "forgot" | "reset";
 }
 
 const GoogleIcon = () => (
@@ -33,9 +34,9 @@ const GoogleIcon = () => (
   </svg>
 );
 
-export default function Auth({ onLoginSuccess, onNavigateLanding }: AuthProps) {
-  // Tabs: 'login' | 'register'
-  const [activeMode, setActiveMode] = useState<"login" | "register">("login");
+export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }: AuthProps) {
+  // Tabs: 'login' | 'register' | 'forgot' | 'reset'
+  const [activeMode, setActiveMode] = useState<"login" | "register" | "forgot" | "reset">(initialMode || "login");
   
   // Registration Role active tabs
   const [registerRole, setRegisterRole] = useState<UserRole>(UserRole.PATIENT);
@@ -47,6 +48,12 @@ export default function Auth({ onLoginSuccess, onNavigateLanding }: AuthProps) {
   const [showOtpScreen, setShowOtpScreen] = useState(false);
   const [otpValue, setOtpValue] = useState("");
   const [pendingPatientFields, setPendingPatientFields] = useState<any>(null);
+
+  React.useEffect(() => {
+    if (initialMode) {
+      setActiveMode(initialMode);
+    }
+  }, [initialMode]);
 
   // States
   const [showPassword, setShowPassword] = useState(false);
@@ -501,6 +508,53 @@ export default function Auth({ onLoginSuccess, onNavigateLanding }: AuthProps) {
     }
   };
 
+  const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: window.location.origin,
+      });
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        setSuccessMsg("Success! A password recovery link has been sent to your email.");
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || "An unexpected error occurred.");
+    }
+  };
+
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg("");
+    setSuccessMsg("");
+    if (password !== confirmPassword) {
+      setErrorMsg("Passwords do not match. Please re-enter.");
+      return;
+    }
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: password
+      });
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        setSuccessMsg("Password successfully updated! Redirecting to login...");
+        setTimeout(() => {
+          supabase.auth.signOut();
+          setActiveMode("login");
+          setSuccessMsg("");
+          setPassword("");
+          setConfirmPassword("");
+        }, 2000);
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || "An unexpected error occurred.");
+    }
+  };
+
   const handleSubmitRedirect = () => {
     setTimeout(() => {
       setActiveMode("login");
@@ -520,7 +574,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding }: AuthProps) {
         </div>
 
         {/* Outer Tabs: LOGIN vs REGISTER */}
-        {!showOtpScreen && (
+        {!showOtpScreen && activeMode !== "forgot" && activeMode !== "reset" && (
           <div className="flex border-b border-[#bec8d2]/20">
             <button
               onClick={() => { setActiveMode("login"); setErrorMsg(""); }}
@@ -603,6 +657,89 @@ export default function Auth({ onLoginSuccess, onNavigateLanding }: AuthProps) {
                 ← Cancel registration
               </button>
             </form>
+          ) : activeMode === "forgot" ? (
+            <form onSubmit={handleForgotPasswordSubmit} className="flex flex-col gap-4">
+              <div className="w-12 h-12 bg-[#0ea5e9]/10 text-[#006591] rounded-full flex items-center justify-center mx-auto mb-2 border border-[#0ea5e9]/30">
+                <Lock className="w-5 h-5" />
+              </div>
+              <h3 className="text-base font-bold text-[#0b1c30] text-center">Reset your password</h3>
+              <p className="text-[11px] text-[#3e4850] text-center max-w-sm mx-auto">
+                CareFlow security will email you instructions to safely reset your password.
+              </p>
+              <div className="flex flex-col gap-1 text-left">
+                <label className="text-[10px] font-bold text-[#3e4850] uppercase flex items-center gap-1">
+                  <Mail className="w-3 h-3" /> Email Address
+                </label>
+                <input
+                  required
+                  type="email"
+                  placeholder="name@hospital.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full bg-[#006591] text-white text-xs font-bold py-2.5 rounded hover:bg-[#004c6e] flex items-center justify-center gap-2 mt-2 transition-colors shadow-xs"
+              >
+                Send Recovery Instructions
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => { setActiveMode("login"); setErrorMsg(""); setSuccessMsg(""); }}
+                className="text-[10px] text-[#006591] hover:underline text-center mt-2"
+              >
+                ← Back to Secure Login
+              </button>
+            </form>
+          ) : activeMode === "reset" ? (
+            <form onSubmit={handleResetPasswordSubmit} className="flex flex-col gap-4">
+              <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-2 border border-emerald-250">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <h3 className="text-base font-bold text-[#0b1c30] text-center">Choose new password</h3>
+              <p className="text-[11px] text-[#3e4850] text-center max-w-sm mx-auto">
+                Type your new secure account password below.
+              </p>
+              
+              <div className="flex flex-col gap-1 text-left">
+                <label className="text-[10px] font-bold text-[#3e4850] uppercase flex items-center gap-1">
+                  New Password
+                </label>
+                <input
+                  required
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1 text-left">
+                <label className="text-[10px] font-bold text-[#3e4850] uppercase flex items-center gap-1">
+                  Confirm Password
+                </label>
+                <input
+                  required
+                  type="password"
+                  placeholder="••••••••"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-[#006591] text-white text-xs font-bold py-2.5 rounded hover:bg-[#004c6e] flex items-center justify-center gap-2 mt-2 transition-colors shadow-xs"
+              >
+                Update password & Sign-in
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </form>
           ) : activeMode === "login" ? (
             /* --- LOGIN MODE --- */
             <form onSubmit={handleLoginSubmit} className="flex flex-col gap-4">
@@ -636,19 +773,6 @@ export default function Auth({ onLoginSuccess, onNavigateLanding }: AuthProps) {
                 </div>
               </div>
 
-              <div className="text-center bg-[#e5eeff]/40 p-2.5 rounded border border-[#bec8d2]/30">
-                <span className="text-[10px] font-medium text-[#3e4850]">
-                  {loginRole === UserRole.MAIN_ADMIN ? (
-                    <span>Fixed Main Admin: <strong className="text-[#006591]">pavaneshvuchuru@gmail.com</strong> (Password: <code className="text-[11px] font-bold">V.pavanesh$13</code>)</span>
-                  ) : loginRole === UserRole.PATIENT ? (
-                    <span>Patient account: <strong>sarah@gmail.com</strong> / password: <code>password123</code></span>
-                  ) : loginRole === UserRole.DOCTOR ? (
-                    <span>Doctor: <strong>emily.chen@careflow.com</strong> / password: <code>password123</code></span>
-                  ) : (
-                    <span>Demo staff password is default: <code>password123</code></span>
-                  )}
-                </span>
-              </div>
 
               <div className="flex flex-col gap-1">
                 <label className="text-[10px] font-bold text-[#3e4850] uppercase flex items-center gap-1">
@@ -669,7 +793,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding }: AuthProps) {
                   <label className="text-[10px] font-bold text-[#3e4850] uppercase flex items-center gap-1">
                     <KeyRound className="w-3 h-3" /> Password
                   </label>
-                  <a href="#" onClick={() => alert("Please consult database seed credentials on the demo header.")} className="text-[10px] text-[#006591] hover:underline hover:text-[#004c6e]">Forgot Password?</a>
+                  <button type="button" onClick={() => { setActiveMode("forgot"); setErrorMsg(""); setSuccessMsg(""); }} className="text-[10px] text-[#006591] hover:underline hover:text-[#004c6e]">Forgot Password?</button>
                 </div>
                 <div className="relative">
                   <input

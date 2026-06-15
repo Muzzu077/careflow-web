@@ -34,32 +34,57 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
   }, [user]);
 
   const loadDatabase = async () => {
-    // Collect users who are pending hospital associate registration
+    // 1. Get admin's hospital ID
+    const adminHospId = await MockDB.getHospitalAdminHospitalId(user.id);
+    
+    // 2. Load all records
     const allUsers = await MockDB.getUsers();
     const allProfs = await MockDB.getProfiles();
     const allHosps = await MockDB.getHospitals();
     const allDocs = await MockDB.getDoctors();
     const allTechs = await MockDB.getLabTechs();
+    const allReceps = await MockDB.getReceptionists();
 
-    setClinicians(allUsers);
+    // 3. Find the admin's hospital info
+    const adminHosp = allHosps.find(h => h.id === adminHospId) || allHosps[0] || {
+      id: "placeholder",
+      name: "CareFlow General Hospital",
+      city: "Seattle",
+      area: "Downtown",
+      address: "123 Main St",
+      approved: true
+    };
+    setHospitalInfo(adminHosp);
+
+    // 4. Filter doctors, receptionists, and lab techs for this hospital
+    const myDoctors = allDocs.filter(d => d.hospital_id === adminHosp.id);
+    const myReceps = allReceps.filter(r => r.hospital_id === adminHosp.id);
+    const myTechs = allTechs.filter(t => t.hospital_id === adminHosp.id);
+
+    // 5. Get the user IDs of the staff in this hospital
+    const myStaffUserIds = new Set([
+      ...myDoctors.map(d => d.id),
+      ...myReceps.map(r => r.id),
+      ...myTechs.map(t => t.id)
+    ]);
+
+    // 6. Filter clinicians (users) that belong to this hospital
+    const myClinicians = allUsers.filter(u => myStaffUserIds.has(u.id));
+
+    setClinicians(myClinicians);
     setProfiles(allProfs);
     setHospitals(allHosps);
-    setDoctors(allDocs);
-    setLabTechs(allTechs);
+    setDoctors(myDoctors);
+    setLabTechs(myTechs);
 
-    // Filter relevant clinician count (Hospital Admin's institution e.g. SeattleGeneral)
-    const doctorsList = allUsers.filter(u => u.role === UserRole.DOCTOR);
-    const receptionistsList = allUsers.filter(u => u.role === UserRole.RECEPTIONIST);
-    const labTechsList = allUsers.filter(u => u.role === UserRole.LAB_TECHNICIAN);
+    setDoctorCount(myDoctors.length);
+    setStaffCount(myReceps.length + myTechs.length);
 
-    setDoctorCount(doctorsList.length);
-    setStaffCount(receptionistsList.length + labTechsList.length);
-
-    // Count patients registered locally
-    setPatientCount(allUsers.filter(u => u.role === UserRole.PATIENT).length);
-
-    // Hospital configuration
-    setHospitalInfo(allHosps[0] || { name: "CareFlow General Hospital", city: "Seattle", area: "Downtown" });
+    // Count patients registered at this hospital (filter appointments at this hospital to find unique patients)
+    const allAppts = await MockDB.getAppointments();
+    const myAppts = allAppts.filter(a => a.hospital_id === adminHosp.id);
+    const myPatientIds = new Set(myAppts.map(a => a.patient_id));
+    setPatientCount(myPatientIds.size);
   };
 
   const getUserName = (userId: string) => {
@@ -82,6 +107,9 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
   // APPROVE STAFF USER
   const handleApproveClinician = async (clinicianId: string) => {
     const allUsers = await MockDB.getUsers();
+    const targetUser = allUsers.find(u => u.id === clinicianId);
+    if (!targetUser) return;
+
     const updated = allUsers.map(u => {
       if (u.id === clinicianId) {
         return { ...u, status: "ACTIVE" as UserStatus };
@@ -90,10 +118,19 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
     });
     await MockDB.saveUsers(updated);
 
-    // If Doctor, mark approved in doctors table too
-    const allDoctors = await MockDB.getDoctors();
-    const updatedDocs = allDoctors.map(d => d.id === clinicianId ? { ...d, approved: true } : d);
-    await MockDB.saveDoctors(updatedDocs);
+    if (targetUser.role === UserRole.DOCTOR) {
+      const allDoctors = await MockDB.getDoctors();
+      const updatedDocs = allDoctors.map(d => d.id === clinicianId ? { ...d, approved: true } : d);
+      await MockDB.saveDoctors(updatedDocs);
+    } else if (targetUser.role === UserRole.RECEPTIONIST) {
+      const allReceptionists = await MockDB.getReceptionists();
+      const updatedReceps = allReceptionists.map(r => r.id === clinicianId ? { ...r, approved: true } : r);
+      await MockDB.saveReceptionists(updatedReceps);
+    } else if (targetUser.role === UserRole.LAB_TECHNICIAN) {
+      const allLabTechs = await MockDB.getLabTechs();
+      const updatedTechs = allLabTechs.map(t => t.id === clinicianId ? { ...t, approved: true } : t);
+      await MockDB.saveLabTechs(updatedTechs);
+    }
 
     alert("Clinician verified successfully. Credential state updated to ACTIVE.");
     loadDatabase();
