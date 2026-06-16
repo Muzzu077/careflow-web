@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Database } from "../../api";
-import { User, UserRole, UserStatus } from "../../types";
+import { User, UserRole, UserStatus, Profile, Hospital, DoctorExt, LabTechnicianExt } from "../../types";
 import { supabase } from "../../supabaseClient";
 import { createClient } from "@supabase/supabase-js";
 import { 
@@ -16,20 +16,25 @@ interface HospitalAdminProps {
 
 export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdminProps) {
   // Tabs: 'verify' | 'staff' | 'analytics' | 'profile'
-  const [activeTab, setActiveTab] = useState<"verify" | "staff" | "analytics" | "profile">("verify");
+  const [activeTab, setActiveTab] = useState<"verify" | "staff" | "analytics" | "profile" | "add-staff">("verify");
 
   // State
   const [clinicians, setClinicians] = useState<User[]>([]);
-  const [profiles, setProfiles] = useState<any[]>([]);
-  const [hospitals, setHospitals] = useState<any[]>([]);
-  const [hospitalInfo, setHospitalInfo] = useState<any>(null);
-  const [doctors, setDoctors] = useState<any[]>([]);
-  const [labTechs, setLabTechs] = useState<any[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [hospitalInfo, setHospitalInfo] = useState<Hospital | null>(null);
+  const [doctors, setDoctors] = useState<DoctorExt[]>([]);
+  const [labTechs, setLabTechs] = useState<LabTechnicianExt[]>([]);
 
   // Stats
   const [patientCount, setPatientCount] = useState(0);
   const [doctorCount, setDoctorCount] = useState(0);
   const [staffCount, setStaffCount] = useState(0);
+  const [appointmentsToday, setAppointmentsToday] = useState(0);
+  const [labRequestsCount, setLabRequestsCount] = useState(0);
+  const [labPendingCount, setLabPendingCount] = useState(0);
+  const [labCompletedCount, setLabCompletedCount] = useState(0);
+  const [weeklyAppts, setWeeklyAppts] = useState<{ day: string; count: number }[]>([]);
 
   // Add Staff form states
   const [staffRole, setStaffRole] = useState<"doctor" | "receptionist" | "lab_technician">("doctor");
@@ -63,12 +68,16 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
     // 3. Find the admin's hospital info
     const adminHosp = allHosps.find(h => h.id === adminHospId) || allHosps[0] || {
       id: "placeholder",
-      name: "CareFlow General Hospital",
+      hospital_name: "CareFlow General Hospital",
       city: "Chennai",
       area: "Tambaram",
       address: "Tambaram High Road",
-      approved: true
-    };
+      state: "Tamil Nadu",
+      pincode: "600045",
+      status: "ACTIVE",
+      approved: true,
+      created_at: new Date().toISOString()
+    } as Hospital;
     setHospitalInfo(adminHosp);
 
     // 4. Filter doctors, receptionists, and lab techs for this hospital
@@ -100,6 +109,52 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
     const myAppts = allAppts.filter(a => a.hospital_id === adminHosp.id);
     const myPatientIds = new Set(myAppts.map(a => a.patient_id));
     setPatientCount(myPatientIds.size);
+
+    // Count today's appointments
+    const todayStr = new Date().toISOString().split('T')[0];
+    const todayAppts = myAppts.filter(a => a.created_at && a.created_at.split('T')[0] === todayStr);
+    setAppointmentsToday(todayAppts.length);
+
+    // Count lab requests for this hospital
+    const { count: labCount } = await supabase
+      .from("lab_requests")
+      .select("*", { count: "exact", head: true })
+      .eq("hospital_id", adminHosp.id);
+    setLabRequestsCount(labCount || 0);
+
+    // Lab request status breakdown
+    const { count: pendingLabs } = await supabase
+      .from("lab_requests")
+      .select("*", { count: "exact", head: true })
+      .eq("hospital_id", adminHosp.id)
+      .neq("status", "COMPLETED");
+    setLabPendingCount(pendingLabs || 0);
+
+    const { count: completedLabs } = await supabase
+      .from("lab_requests")
+      .select("*", { count: "exact", head: true })
+      .eq("hospital_id", adminHosp.id)
+      .eq("status", "COMPLETED");
+    setLabCompletedCount(completedLabs || 0);
+
+    // Weekly appointment trend (last 7 days)
+    const last7Days = Array.from({ length: 7 }).map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - i));
+      return {
+        dateStr: d.toLocaleDateString([], { month: 'short', day: 'numeric' }),
+        isoStr: d.toISOString().split('T')[0],
+        count: 0
+      };
+    });
+    myAppts.forEach(a => {
+      if (a.created_at) {
+        const datePart = a.created_at.split('T')[0];
+        const match = last7Days.find(day => day.isoStr === datePart);
+        if (match) match.count++;
+      }
+    });
+    setWeeklyAppts(last7Days.map(d => ({ day: d.dateStr, count: d.count })));
   };
 
   const getUserName = (userId: string) => {
@@ -131,6 +186,14 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
       return;
     }
 
+    await Database.logStaffActivity(
+      user.id,
+      "Hospital Administrator",
+      "STAFF_STATUS_CHANGE",
+      `Suspended staff user credentials for user ID: ${clinicianId}`,
+      hospitalInfo?.id
+    );
+
     alert("Clinician credentials SUSPENDED.");
     loadDatabase();
   };
@@ -146,6 +209,14 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
       alert("Database error: " + error.message);
       return;
     }
+
+    await Database.logStaffActivity(
+      user.id,
+      "Hospital Administrator",
+      "STAFF_STATUS_CHANGE",
+      `Reactivated staff user credentials for user ID: ${clinicianId}`,
+      hospitalInfo?.id
+    );
 
     alert("Clinician credentials REACTIVATED.");
     loadDatabase();
@@ -249,6 +320,14 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
       }
 
       await supabase.from("users").update({ status: UserStatus.ACTIVE }).eq("id", staffUserId);
+
+      await Database.logStaffActivity(
+        user.id,
+        "Hospital Administrator",
+        "STAFF_CREATED",
+        `Registered new staff user ${staffName} (${dbRole}) with Email: ${staffEmail}`,
+        hospitalInfo.id
+      );
 
       setAddStaffSuccess(true);
       setStaffName("");
@@ -638,52 +717,165 @@ export default function DashboardHospitalAdmin({ user, onLogout }: HospitalAdmin
           <div className="space-y-6">
             <div>
               <h1 className="text-2xl font-black text-[#0b1c30]">Clinical Workload Analytics</h1>
-              <p className="text-xs text-[#3e4850]">Platform parameters, hospital occupancy rate, and specialists analytics charts.</p>
+              <p className="text-xs text-[#3e4850]">Hospital performance metrics, occupancy rates, and live operational load across departments.</p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* KPI Metric Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-white p-5 border border-[#bec8d2]/30 rounded-xl shadow-xs">
-                <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider block mb-2">Total Patients</span>
-                <div className="text-3xl font-black text-[#006591]">{patientCount}</div>
-                <p className="text-[10px] text-slate-400 mt-1">Unique Patient ID keys</p>
+                <span className="text-xs text-slate-500 font-bold block mb-1">TODAY'S APPOINTMENTS</span>
+                <div className="text-3xl font-black text-[#006591]">{appointmentsToday}</div>
+                <p className="text-[10px] text-slate-400 mt-1">Scheduled bookings today</p>
               </div>
 
               <div className="bg-white p-5 border border-[#bec8d2]/30 rounded-xl shadow-xs">
-                <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider block mb-2">Active Specialists</span>
+                <span className="text-xs text-slate-500 font-bold block mb-1">TOTAL PATIENTS</span>
+                <div className="text-3xl font-black text-[#006591]">{patientCount}</div>
+                <p className="text-[10px] text-slate-400 mt-1">Unique patient profiles</p>
+              </div>
+
+              <div className="bg-white p-5 border border-[#bec8d2]/30 rounded-xl shadow-xs">
+                <span className="text-xs text-slate-500 font-bold block mb-1">ACTIVE DOCTORS</span>
                 <div className="text-3xl font-black text-[#006591]">{doctorCount}</div>
                 <p className="text-[10px] text-slate-400 mt-1">FTE Clinicians on site</p>
               </div>
 
               <div className="bg-white p-5 border border-[#bec8d2]/30 rounded-xl shadow-xs">
-                <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider block mb-2">Office Staff</span>
-                <div className="text-3xl font-black text-[#006591]">{staffCount}</div>
-                <p className="text-[10px] text-slate-400 mt-1">Reception + Lab Techs</p>
+                <span className="text-xs text-slate-500 font-bold block mb-1">LAB REQUESTS</span>
+                <div className="text-3xl font-black text-[#006591]">{labRequestsCount}</div>
+                <p className="text-[10px] text-slate-400 mt-1">Pathology lab requests</p>
               </div>
             </div>
 
-            {/* Simulated Workload Metric Bar */}
-            <div className="bg-white p-6 border border-[#bec8d2]/30 rounded-xl shadow-xs space-y-4">
-              <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider">Weekly Consulting Load By Department</h3>
-              
-              <div className="space-y-3">
-                {[
-                  { dept: "General Medicine", load: "85%", bg: "bg-teal-500" },
-                  { dept: "Cardiology", load: "92%", bg: "bg-rose-500" },
-                  { dept: "Orthopedics", load: "64%", bg: "bg-indigo-500" },
-                  { dept: "Diagnostics lab", load: "78%", bg: "bg-emerald-500" }
-                ].map((item, idx) => (
-                  <div key={idx} className="space-y-1">
-                    <div className="flex justify-between text-xs font-semibold text-slate-700">
-                      <span>{item.dept}</span>
-                      <span>{item.load} Capacity</span>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+              {/* SVG Donut Chart - Staff Distribution */}
+              <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs space-y-4">
+                <div>
+                  <h3 className="font-extrabold text-sm text-[#0b1c30]">Staff Distribution</h3>
+                  <p className="text-[11px] text-[#3e4850]">Breakdown of clinical staff roles at this facility.</p>
+                </div>
+                {(() => {
+                  const total = doctorCount + staffCount;
+                  if (total === 0) return (
+                    <div className="h-40 flex items-center justify-center text-xs text-slate-400">No staff registered yet.</div>
+                  );
+                  const segments = [
+                    { label: "Doctors", count: doctorCount, color: "#0ea5e9" },
+                    { label: "Support Staff", count: staffCount, color: "#6366f1" }
+                  ];
+                  const r = 60, cx = 80, cy = 80;
+                  let startAngle = -Math.PI / 2;
+                  const paths = segments.map(seg => {
+                    const angle = (seg.count / total) * 2 * Math.PI;
+                    const x1 = cx + r * Math.cos(startAngle);
+                    const y1 = cy + r * Math.sin(startAngle);
+                    const x2 = cx + r * Math.cos(startAngle + angle);
+                    const y2 = cy + r * Math.sin(startAngle + angle);
+                    const largeArc = angle > Math.PI ? 1 : 0;
+                    const d = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+                    const result = { ...seg, d };
+                    startAngle += angle;
+                    return result;
+                  });
+                  return (
+                    <div className="flex items-center gap-6">
+                      <svg viewBox="0 0 160 160" className="w-36 h-36 shrink-0">
+                        {paths.map((p, i) => (
+                          <path key={i} d={p.d} fill={p.color} opacity="0.9" />
+                        ))}
+                        <circle cx={cx} cy={cy} r={r * 0.55} fill="white" />
+                        <text x={cx} y={cy - 6} textAnchor="middle" className="text-[10px] fill-slate-500 font-bold">{total}</text>
+                        <text x={cx} y={cy + 8} textAnchor="middle" className="text-[8px] fill-slate-400">Total Staff</text>
+                      </svg>
+                      <div className="space-y-2 text-xs">
+                        {paths.map((p, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                            <span className="text-slate-600 font-semibold">{p.label}: <span className="text-[#0b1c30] font-black">{p.count}</span></span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <div className="w-full bg-slate-100 h-2 rounded overflow-hidden">
-                      <div className={`${item.bg} h-full`} style={{ width: item.load }}></div>
-                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* SVG Bar Chart - Weekly Appointment Trend */}
+              <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs space-y-4">
+                <div>
+                  <h3 className="font-extrabold text-sm text-[#0b1c30]">Weekly Booking Trend</h3>
+                  <p className="text-[11px] text-[#3e4850]">Appointments booked at this facility over the last 7 days.</p>
+                </div>
+                {weeklyAppts.length > 0 ? (
+                  <div className="w-full overflow-x-auto">
+                    <svg className="w-full min-w-[260px]" viewBox="0 0 300 150" height="150">
+                      {(() => {
+                        const maxVal = Math.max(...weeklyAppts.map(d => d.count), 1);
+                        return weeklyAppts.map((d, i) => {
+                          const barH = (d.count / maxVal) * 90;
+                          const x = 20 + i * 40;
+                          const y = 100 - barH;
+                          return (
+                            <g key={i}>
+                              <rect x={x} y={y} width="28" height={barH} rx="4" fill="#0ea5e9" opacity="0.85" />
+                              <text x={x + 14} y={y - 4} textAnchor="middle" className="text-[8px] fill-[#006591] font-black">
+                                {d.count > 0 ? d.count : ""}
+                              </text>
+                              <text x={x + 14} y="115" textAnchor="middle" className="text-[7px] fill-slate-400 font-semibold">
+                                {d.day.split(' ')[1]}
+                              </text>
+                              <text x={x + 14} y="124" textAnchor="middle" className="text-[7px] fill-slate-400">
+                                {d.day.split(' ')[0]}
+                              </text>
+                            </g>
+                          );
+                        });
+                      })()}
+                      <line x1="15" y1="100" x2="285" y2="100" stroke="#e2e8f0" strokeWidth="1" />
+                    </svg>
                   </div>
-                ))}
+                ) : (
+                  <div className="h-32 flex items-center justify-center text-xs text-slate-400">Loading trend data...</div>
+                )}
               </div>
             </div>
+
+            {/* Pending vs Completed Lab Ratio */}
+            <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs space-y-4">
+              <div>
+                <h3 className="font-extrabold text-sm text-[#0b1c30]">Lab Request Completion Ratio</h3>
+                <p className="text-[11px] text-[#3e4850]">Breakdown of pending vs completed pathology lab requests at this facility.</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-center">
+                  <span className="text-xs text-amber-700 font-bold block mb-1">PENDING / IN-PROGRESS</span>
+                  <div className="text-3xl font-black text-amber-600">{labPendingCount}</div>
+                </div>
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 text-center">
+                  <span className="text-xs text-emerald-700 font-bold block mb-1">COMPLETED</span>
+                  <div className="text-3xl font-black text-emerald-600">{labCompletedCount}</div>
+                </div>
+              </div>
+
+              {/* Ratio Bar */}
+              {labRequestsCount > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-500">
+                    <span>Completion Rate</span>
+                    <span>{Math.round((labCompletedCount / labRequestsCount) * 100)}%</span>
+                  </div>
+                  <div className="w-full h-3 bg-amber-100 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-emerald-500 rounded-full transition-all"
+                      style={{ width: `${(labCompletedCount / labRequestsCount) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
           </div>
         )}
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Database } from "../../api";
-import { User, Appointment, Prescription, PrescriptionItem, LabRequest, Notification, Chat, Message, UserRole, AppointmentStatus, LabRequestStatus, Profile, DoctorExt } from "../../types";
+import { User, Appointment, Prescription, PrescriptionItem, LabRequest, LabReport, Notification, Chat, Message, UserRole, AppointmentStatus, LabRequestStatus, Profile, DoctorExt } from "../../types";
 import { supabase } from "../../supabaseClient";
 import { 
   Heart, Calendar, FileText, ClipboardList, Send, MapPin, 
@@ -40,24 +40,29 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
   const [notes, setNotes] = useState("");
   
   // Custom prescription medications builder
-  const [prescriptionMeds, setPrescriptionMeds] = useState<{ medicineName: string; dosage: string; duration: string; reminderTime: string }[]>([]);
+  const [prescriptionMeds, setPrescriptionMeds] = useState<{ medicineName: string; dosage: string; frequency: string; duration: string; instructions: string; reminderTime: string }[]>([]);
   const [medInputName, setMedInputName] = useState("");
-  const [medInputDosage, setMedInputDosage] = useState("1-0-1");
-  const [medInputDuration, setMedInputDuration] = useState("7 days");
+  const [medInputDosage, setMedInputDosage] = useState("650mg");
+  const [medInputFrequency, setMedInputFrequency] = useState("Morning & Night");
+  const [medInputDuration, setMedInputDuration] = useState("5 Days");
+  const [medInputInstructions, setMedInputInstructions] = useState("After Food");
   const [medInputReminders, setMedInputReminders] = useState("08:00, 20:00");
 
   // Lab test creator state
   const [labPatientId, setLabPatientId] = useState("");
   const [labPatientName, setLabPatientName] = useState("");
-  const [labTestName, setLabTestName] = useState("Comprehensive Blood Panel");
+  const [labTestName, setLabTestName] = useState("Blood Test");
+  const [labInstructions, setLabInstructions] = useState("");
   const [labAppointmentId, setLabAppointmentId] = useState("");
   const [labSuccess, setLabSuccess] = useState(false);
+  const [labReports, setLabReports] = useState<LabReport[]>([]);
 
   // Chat conversation
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
 
-  const [docProfile, setDocProfile] = useState<any>(null);
+  const [docProfile, setDocProfile] = useState<Profile | null>(null);
+  const [activePatientHistory, setActivePatientHistory] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
 
   useEffect(() => {
@@ -102,6 +107,9 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       setDocProfile(foundProfile);
       setDoctorRecord(currentDoc);
       setAvailabilitySlots(slots);
+      
+      const reps = await Database.getLabReports();
+      setLabReports(reps);
 
       if (allChats.length > 0 && !activeChatId) {
         setActiveChatId(allChats[0].id);
@@ -109,6 +117,16 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     } catch (e) {
       console.error("Error loading doctor database:", e);
     }
+  };
+
+  const handleFrequencyChange = (freq: string) => {
+    setMedInputFrequency(freq);
+    if (freq === "Morning") setMedInputReminders("08:00");
+    else if (freq === "Afternoon") setMedInputReminders("14:00");
+    else if (freq === "Night") setMedInputReminders("20:00");
+    else if (freq === "Morning & Night") setMedInputReminders("08:00, 20:00");
+    else if (freq === "Morning, Afternoon & Night") setMedInputReminders("08:00, 14:00, 20:00");
+    else setMedInputReminders("08:00");
   };
 
   // Add medicine to constructor buffer
@@ -120,10 +138,17 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     setPrescriptionMeds(prev => [...prev, {
       medicineName: medInputName,
       dosage: medInputDosage,
+      frequency: medInputFrequency,
       duration: medInputDuration,
+      instructions: medInputInstructions,
       reminderTime: medInputReminders
     }]);
     setMedInputName("");
+    setMedInputDosage("650mg");
+    setMedInputFrequency("Morning & Night");
+    setMedInputDuration("5 Days");
+    setMedInputInstructions("After Food");
+    setMedInputReminders("08:00, 20:00");
   };
 
   const handleRemoveMed = (idx: number) => {
@@ -136,11 +161,67 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       const updated = allAppts.map(a => a.id === apt.id ? { ...a, status: AppointmentStatus.IN_CONSULTATION } : a);
       await Database.saveAppointments(updated);
       await Database.logAppointmentStatusChange(apt.id, AppointmentStatus.CHECKED_IN, AppointmentStatus.IN_CONSULTATION, user.id);
+      await Database.addNotification(
+        apt.patient_id,
+        'Consultation Started',
+        `Dr. ${docProfile?.full_name || 'Doctor'} has started your consultation.`,
+        'APPOINTMENT'
+      );
       setActiveConsultation({ ...apt, status: AppointmentStatus.IN_CONSULTATION });
       setSymptoms("");
       setDiagnosis("");
       setNotes("");
       setPrescriptionMeds([]);
+
+      // Load active patient's longitudinal history
+      try {
+        const patientId = apt.patient_id;
+        const patientAppts = allAppts.filter(a => a.patient_id === patientId);
+        const patientPrescs = (await Database.getPrescriptions()).filter(p => p.patient_id === patientId);
+        const patientReports = (await Database.getLabReports()).filter(r => r.patient_id === patientId);
+        const allPrescItems = await Database.getPrescriptionItems();
+
+        const appointmentEvents = patientAppts.map(a => ({
+          id: a.id,
+          type: "APPOINTMENT",
+          date: a.date,
+          title: `Appointment - ${a.doctor_specialization}`,
+          subtitle: `With Dr. ${a.doctor_name} at ${a.hospital_name}`,
+          details: `Time Slot: ${a.time} | Token: #${a.token}`,
+          status: a.status
+        }));
+
+        const prescriptionEvents = patientPrescs.map(p => {
+          const prescItems = allPrescItems.filter(item => item.prescription_id === p.id);
+          return {
+            id: p.id,
+            type: "PRESCRIPTION",
+            date: p.created_at.split("T")[0],
+            title: `Rx Prescription Released`,
+            subtitle: `Diagnosis: ${p.diagnosis} (by Dr. ${p.doctor_name})`,
+            details: `Symptoms: ${p.symptoms || "None reported"}\nAdvices: ${p.notes || "None"}\nMedications:\n${prescItems.map(m => `- ${m.medicine_name}: ${m.dosage} for ${m.duration}`).join("\n")}`
+          };
+        });
+
+        const labEvents = patientReports.map(r => ({
+          id: r.id,
+          type: "LAB_REPORT",
+          date: r.created_at.split("T")[0],
+          title: `Lab Report: ${r.test_name}`,
+          subtitle: `Completed by Lab Specialist for Dr. ${r.doctor_name}`,
+          details: r.results_text
+        }));
+
+        const combinedHistory = [...appointmentEvents, ...prescriptionEvents, ...labEvents].sort(
+          (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
+
+        setActivePatientHistory(combinedHistory);
+      } catch (historyErr) {
+        console.error("Error loading patient history:", historyErr);
+        setActivePatientHistory([]);
+      }
+
       loadDatabase();
     } catch (err: any) {
       alert("Error starting consultation: " + err.message);
@@ -157,97 +238,131 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       return;
     }
 
-    const prescriptionId = crypto.randomUUID();
-    
-    const patProfile = profiles.find(p => p.id === activeConsultation.patient_id);
+    try {
+      const prescriptionId = crypto.randomUUID();
+      
+      const patProfile = profiles.find(p => p.id === activeConsultation.patient_id);
 
-    // 1. Create Core Prescription
-    const newPrescription: Prescription = {
-      id: prescriptionId,
-      appointment_id: activeConsultation.id,
-      doctor_id: user.id,
-      doctor_name: docProfile?.full_name || "Doctor",
-      patient_id: activeConsultation.patient_id,
-      patient_name: activeConsultation.patient_name,
-      patient_dob: patProfile?.dob || "",
-      patient_gender: patProfile?.gender || "",
-      hospital_id: activeConsultation.hospital_id,
-      hospital_name: activeConsultation.hospital_name,
-      symptoms,
-      diagnosis,
-      notes,
-      created_at: new Date().toISOString()
-    };
+      // 1. Create Core Prescription
+      const newPrescription: Prescription = {
+        id: prescriptionId,
+        appointment_id: activeConsultation.id,
+        doctor_id: user.id,
+        doctor_name: docProfile?.full_name || "Doctor",
+        patient_id: activeConsultation.patient_id,
+        patient_name: activeConsultation.patient_name,
+        patient_dob: patProfile?.dob || "",
+        patient_gender: patProfile?.gender || "",
+        hospital_id: activeConsultation.hospital_id,
+        hospital_name: activeConsultation.hospital_name,
+        symptoms,
+        diagnosis,
+        notes,
+        created_at: new Date().toISOString()
+      };
 
-    const currentPrescs = await Database.getPrescriptions();
-    currentPrescs.unshift(newPrescription);
-    await Database.savePrescriptions(currentPrescs);
+      const currentPrescs = await Database.getPrescriptions();
+      currentPrescs.unshift(newPrescription);
+      await Database.savePrescriptions(currentPrescs);
 
-    // 2. Inject prescription drugs list mapping
-    const currentItems = await Database.getPrescriptionItems();
-    const newRemindersList = await Database.getReminders();
+      // 2. Inject prescription drugs list mapping
+      const currentItems = await Database.getPrescriptionItems();
+      const newRemindersList = await Database.getReminders();
 
-    prescriptionMeds.forEach(med => {
-      const itemUuid = crypto.randomUUID();
-      currentItems.push({
-        id: itemUuid,
-        prescription_id: prescriptionId,
-        medicine_name: med.medicineName,
-        dosage: med.dosage,
-        duration: med.duration,
-        reminder_time: med.reminderTime
-      });
-
-      // Split comma reminders to generate multiple distinct time alert slots
-      const timeSlots = med.reminderTime.split(",").map(t => t.trim());
-      timeSlots.forEach(time => {
-        newRemindersList.push({
-          id: crypto.randomUUID(),
-          patient_id: activeConsultation.patient_id,
+      prescriptionMeds.forEach(med => {
+        const itemUuid = crypto.randomUUID();
+        currentItems.push({
+          id: itemUuid,
           prescription_id: prescriptionId,
           medicine_name: med.medicineName,
-          time: time || "08:00",
           dosage: med.dosage,
-          taken: false,
-          dateStr: new Date().toISOString().split("T")[0]
+          frequency: med.frequency,
+          duration: med.duration,
+          instructions: med.instructions,
+          reminder_time: med.reminderTime
         });
+
+        // Split comma reminders to generate multiple distinct time alert slots
+        const timeSlots = med.reminderTime.split(",").map(t => t.trim());
+        
+        // Parse duration to schedule multiple days of reminders
+        let days = 1;
+        const durationStr = med.duration.toLowerCase();
+        const match = durationStr.match(/(\d+)/);
+        if (match) {
+          days = parseInt(match[1]);
+        } else if (durationStr.includes("week")) {
+          days = 7;
+        } else if (durationStr.includes("month")) {
+          days = 30;
+        }
+
+        for (let i = 0; i < days; i++) {
+          const targetDate = new Date();
+          targetDate.setDate(targetDate.getDate() + i);
+          const dateStr = targetDate.toISOString().split("T")[0];
+
+          timeSlots.forEach(time => {
+            newRemindersList.push({
+              id: crypto.randomUUID(),
+              patient_id: activeConsultation.patient_id,
+              prescription_id: prescriptionId,
+              medicine_name: med.medicineName,
+              time: time || "08:00",
+              dosage: med.dosage,
+              taken: false,
+              dateStr: dateStr
+            });
+          });
+        }
       });
-    });
 
-    await Database.savePrescriptionItems(currentItems);
-    await Database.saveReminders(newRemindersList);
+      await Database.savePrescriptionItems(currentItems);
+      await Database.saveReminders(newRemindersList);
 
-    // 3. Mark appointment complete in db
-    const currentAppointments = await Database.getAppointments();
-    const updatedApts = currentAppointments.map(a => {
-      if (a.id === activeConsultation.id) {
-        return { ...a, status: AppointmentStatus.COMPLETED };
-      }
-      return a;
-    });
-    await Database.saveAppointments(updatedApts);
+      // 3. Mark appointment complete in db
+      const currentAppointments = await Database.getAppointments();
+      const updatedApts = currentAppointments.map(a => {
+        if (a.id === activeConsultation.id) {
+          return { ...a, status: AppointmentStatus.COMPLETED };
+        }
+        return a;
+      });
+      await Database.saveAppointments(updatedApts);
 
-    // Log status change to audit logs
-    await Database.logAppointmentStatusChange(activeConsultation.id, AppointmentStatus.IN_CONSULTATION, AppointmentStatus.COMPLETED, user.id);
+      // Log status change to audit logs
+      await Database.logAppointmentStatusChange(activeConsultation.id, AppointmentStatus.IN_CONSULTATION, AppointmentStatus.COMPLETED, user.id);
 
-    // 4. Send security notification
-    await Database.addNotification(
-      activeConsultation.patient_id, 
-      "Prescription Ready", 
-      `Dr. ${docProfile?.full_name} completed consultation. View medications directions on dashboard.`,
-      "PRESCRIPTION"
-    );
+      // 4. Send security notification
+      await Database.addNotification(
+        activeConsultation.patient_id, 
+        "Prescription Ready", 
+        `Dr. ${docProfile?.full_name} completed consultation. View medications directions on dashboard.`,
+        "PRESCRIPTION"
+      );
 
-    alert("Consultation complete. Diagnostic Rx record published.");
-    
-    // Clear forms
-    setSymptoms("");
-    setDiagnosis("");
-    setNotes("");
-    setPrescriptionMeds([]);
-    setActiveConsultation(null);
-    setActiveTab("queue");
-    loadDatabase();
+      // Audit Log: staff activity
+      await Database.logStaffActivity(
+        user.id,
+        docProfile?.full_name || "Doctor",
+        "PRESCRIPTION_GENERATED",
+        `Generated prescription for diagnosis: "${diagnosis}" for patient: ${activeConsultation.patient_name}`,
+        activeConsultation.hospital_id
+      );
+
+      alert("Consultation complete. Diagnostic Rx record published.");
+      
+      // Clear forms
+      setSymptoms("");
+      setDiagnosis("");
+      setNotes("");
+      setPrescriptionMeds([]);
+      setActiveConsultation(null);
+      setActiveTab("queue");
+      loadDatabase();
+    } catch (err: any) {
+      alert("Error saving prescription: " + err.message);
+    }
   };
 
   const handleCreateLabRequest = async (e: React.FormEvent) => {
@@ -265,14 +380,22 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       patient_id: labPatientId,
       patient_name: labPatientName,
       appointment_id: labAppointmentId || "apt-direct",
-      hospital_id: doctorRecord?.hospital_id || "hosp-1", // associated doctor's clinic/hospital
+      hospital_id: doctorRecord?.hospital_id || "hosp-1",
       test_name: labTestName,
       status: LabRequestStatus.PENDING,
+      instructions: labInstructions || undefined,
       created_at: new Date().toISOString()
     });
 
     await Database.saveLabRequests(currentReqs);
+    await Database.addNotification(
+      labPatientId,
+      'Lab Test Ordered',
+      `Dr. ${docProfile?.full_name || 'Doctor'} has ordered a ${labTestName} test for you.`,
+      'LAB_REPORT'
+    );
     setLabSuccess(true);
+    setLabInstructions("");
     setTimeout(() => {
       setLabSuccess(false);
       setActiveTab("queue");
@@ -294,6 +417,19 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     });
 
     await Database.saveMessages(allMsgs);
+    
+    // Notify recipient of chat message
+    const activeChat = chats.find(c => c.id === activeChatId);
+    if (activeChat) {
+      const recipientId = activeChat.participant1_id === user.id ? activeChat.participant2_id : activeChat.participant1_id;
+      await Database.addNotification(
+        recipientId,
+        "New message from Doctor",
+        `Dr. ${docProfile?.full_name || "Doctor"} sent: "${chatInput.substring(0, 40)}${chatInput.length > 40 ? "..." : ""}"`,
+        "CHAT"
+      );
+    }
+
     setChatInput("");
     loadDatabase();
   };
@@ -301,12 +437,25 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
   const handleAddAvailabilitySlot = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const newStartTime = compStart.includes(':') && compStart.split(':').length === 2 ? `${compStart}:00` : compStart;
+      const newEndTime = compEnd.includes(':') && compEnd.split(':').length === 2 ? `${compEnd}:00` : compEnd;
+
+      // Overlap validation: check if any existing slot on the same day overlaps
+      const sameDaySlots = availabilitySlots.filter((s: any) => s.day_of_week === compDay);
+      const hasOverlap = sameDaySlots.some((existing: any) => {
+        return newStartTime < existing.end_time && newEndTime > existing.start_time;
+      });
+      if (hasOverlap) {
+        alert('Time slot overlaps with an existing slot on this day');
+        return;
+      }
+
       const newSlot = {
         id: crypto.randomUUID(),
         doctor_id: user.id,
         day_of_week: compDay,
-        start_time: compStart.includes(':') && compStart.split(':').length === 2 ? `${compStart}:00` : compStart,
-        end_time: compEnd.includes(':') && compEnd.split(':').length === 2 ? `${compEnd}:00` : compEnd,
+        start_time: newStartTime,
+        end_time: newEndTime,
         token_type: compTokenType,
         max_tokens: compMaxTokens,
         created_at: new Date().toISOString()
@@ -502,146 +651,211 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
               </button>
             </div>
 
-            <form onSubmit={handleSubmitConsultation} className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              
-              {/* Symptoms & Diagnosis inputs */}
-              <div className="col-span-1 md:col-span-2 space-y-4 bg-white p-6 border border-[#bec8d2]/30 rounded-xl shadow-xs">
-                <div>
-                  <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1">Symptoms Description</label>
-                  <textarea 
-                    rows={2}
-                    placeholder="Mild chest pain, shortness of breath, headache..."
-                    value={symptoms}
-                    onChange={(e) => setSymptoms(e.target.value)}
-                    className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1">Clinical Diagnosis Record *</label>
-                  <input 
-                    required
-                    type="text"
-                    placeholder="Slight exertion hypertension, stress induced palpitations etc."
-                    value={diagnosis}
-                    onChange={(e) => setDiagnosis(e.target.value)}
-                    className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1">Prescription Notes / Lifestyle advices</label>
-                  <textarea 
-                    rows={3}
-                    placeholder="Advised low fat diet, strictly avoid heavy cardio activities for 14 days, measure BP daily."
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
-                  />
-                </div>
-
-                <div className="pt-4 border-t border-slate-100 flex justify-end">
-                  <button
-                    type="submit"
-                    className="bg-emerald-600 text-white font-extrabold text-xs px-6 py-3 rounded-lg hover:bg-emerald-700 flex items-center gap-2"
-                  >
-                    <CheckCircle2 className="w-4 h-4" /> Save Rx Prescription & Close Consultation
-                  </button>
-                </div>
-              </div>
-
-              {/* Interactive Drug list Builder */}
-              <div className="col-span-1 bg-white p-5 border border-[#bec8d2]/30 rounded-xl shadow-xs flex flex-col justify-between">
-                <div>
-                  <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider mb-4 border-b pb-2">Drug Roster Composer</h3>
+            <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+              <div className="xl:col-span-3">
+                <form onSubmit={handleSubmitConsultation} className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   
-                  {/* Current builders list */}
-                  <div className="space-y-2 mb-4">
-                    {prescriptionMeds.length === 0 ? (
-                      <p className="text-[11px] text-slate-400">No drugs added. Populate using constructor tool below.</p>
-                    ) : (
-                      prescriptionMeds.map((med, idx) => (
-                        <div key={idx} className="p-2.5 bg-stone-50 border border-slate-200 rounded-lg flex items-center justify-between text-xs">
-                          <div>
-                            <p className="font-bold text-slate-800">{med.medicineName}</p>
-                            <p className="text-[10px] text-slate-500">Dosage: {med.dosage} · Duration: {med.duration}</p>
-                          </div>
-                          <button 
-                            type="button" 
-                            onClick={() => handleRemoveMed(idx)}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                  {/* Symptoms & Diagnosis inputs */}
+                  <div className="col-span-1 md:col-span-2 space-y-4 bg-white p-6 border border-[#bec8d2]/30 rounded-xl shadow-xs">
+                    <div>
+                      <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1">Symptoms Description</label>
+                      <textarea 
+                        rows={2}
+                        placeholder="Mild chest pain, shortness of breath, headache..."
+                        value={symptoms}
+                        onChange={(e) => setSymptoms(e.target.value)}
+                        className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1">Clinical Diagnosis Record *</label>
+                      <input 
+                        required
+                        type="text"
+                        placeholder="Slight exertion hypertension, stress induced palpitations etc."
+                        value={diagnosis}
+                        onChange={(e) => setDiagnosis(e.target.value)}
+                        className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1">Prescription Notes / Lifestyle advices</label>
+                      <textarea 
+                        rows={3}
+                        placeholder="Advised low fat diet, strictly avoid heavy cardio activities for 14 days, measure BP daily."
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-100 flex justify-end">
+                      <button
+                        type="submit"
+                        className="bg-emerald-600 text-white font-extrabold text-xs px-6 py-3 rounded-lg hover:bg-emerald-700 flex items-center gap-2"
+                      >
+                        <CheckCircle2 className="w-4 h-4" /> Save Rx Prescription & Close Consultation
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Interactive Drug list Builder */}
+                  <div className="col-span-1 bg-white p-5 border border-[#bec8d2]/30 rounded-xl shadow-xs flex flex-col justify-between">
+                    <div>
+                      <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider mb-4 border-b pb-2">Drug Roster Composer</h3>
+                      
+                      {/* Current builders list */}
+                      <div className="space-y-2 mb-4">
+                        {prescriptionMeds.length === 0 ? (
+                          <p className="text-[11px] text-slate-400">No drugs added. Populate using constructor tool below.</p>
+                        ) : (
+                          prescriptionMeds.map((med, idx) => (
+                            <div key={idx} className="p-2.5 bg-stone-50 border border-slate-200 rounded-lg flex items-center justify-between text-xs">
+                              <div className="space-y-0.5">
+                                <p className="font-bold text-slate-800">{med.medicineName} ({med.dosage})</p>
+                                <p className="text-[10px] text-slate-500">Freq: {med.frequency} · Dur: {med.duration}</p>
+                                <p className="text-[9px] text-indigo-600 font-semibold">{med.instructions}</p>
+                              </div>
+                              <button 
+                                type="button" 
+                                onClick={() => handleRemoveMed(idx)}
+                                className="text-red-500 hover:text-red-700 shrink-0"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      {/* Constructor parameters */}
+                      <div className="space-y-3 pt-3 border-t border-slate-100 text-left">
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-500 uppercase">Medicine Name</label>
+                          <input 
+                            type="text"
+                            placeholder="e.g. Paracetamol"
+                            value={medInputName}
+                            onChange={(e) => setMedInputName(e.target.value)}
+                            className="w-full px-2.5 py-1.5 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                          />
                         </div>
-                      ))
-                    )}
-                  </div>
 
-                  {/* Constructor parameters */}
-                  <div className="space-y-3 pt-3 border-t border-slate-100">
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-500 uppercase">Medicine Name</label>
-                      <input 
-                        type="text"
-                        placeholder="e.g. Lisinopril 10mg"
-                        value={medInputName}
-                        onChange={(e) => setMedInputName(e.target.value)}
-                        className="w-full px-2.5 py-1.5 border border-[#bec8d2] rounded text-xs focus:outline-none"
-                      />
-                    </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-500 uppercase">Dosage</label>
+                            <input 
+                              type="text"
+                              placeholder="e.g. 650mg"
+                              value={medInputDosage}
+                              onChange={(e) => setMedInputDosage(e.target.value)}
+                              className="w-full px-2.5 py-1.5 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                            />
+                          </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="block text-[9px] font-bold text-slate-500 uppercase">Dosage</label>
-                        <select 
-                          value={medInputDosage} 
-                          onChange={(e) => setMedInputDosage(e.target.value)}
-                          className="w-full px-2 py-1.5 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-500 uppercase">Duration</label>
+                            <input 
+                              type="text"
+                              placeholder="e.g. 5 Days"
+                              value={medInputDuration}
+                              onChange={(e) => setMedInputDuration(e.target.value)}
+                              className="w-full px-2.5 py-1.5 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-500 uppercase">Frequency</label>
+                            <select 
+                              value={medInputFrequency} 
+                              onChange={(e) => handleFrequencyChange(e.target.value)}
+                              className="w-full px-2 py-1.5 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
+                            >
+                              <option value="Morning & Night">Morning & Night</option>
+                              <option value="Morning, Afternoon & Night">Morn, Aft, Night</option>
+                              <option value="Morning">Morning Only</option>
+                              <option value="Afternoon">Afternoon Only</option>
+                              <option value="Night">Night Only</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-500 uppercase">Instructions</label>
+                            <select 
+                              value={medInputInstructions}
+                              onChange={(e) => setMedInputInstructions(e.target.value)}
+                              className="w-full px-2 py-1.5 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
+                            >
+                              <option value="After Food">After Food</option>
+                              <option value="Before Food">Before Food</option>
+                              <option value="With Food">With Food</option>
+                              <option value="Empty Stomach">Empty Stomach</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[9px] font-bold text-slate-500 uppercase">Reminder Times (Auto)</label>
+                          <input 
+                            type="text"
+                            readOnly
+                            placeholder="08:00, 20:00"
+                            value={medInputReminders}
+                            className="w-full px-2.5 py-1.5 border border-slate-200 bg-slate-50 text-slate-400 rounded text-xs focus:outline-none font-mono"
+                          />
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleAddMed}
+                          className="w-full bg-[#006591] text-white text-xs font-semibold py-2 rounded flex items-center justify-center gap-1 hover:bg-[#004c6e]"
                         >
-                          <option value="1-0-1">1-0-1</option>
-                          <option value="0-1-0">0-1-0</option>
-                          <option value="1-0-0">1-0-0</option>
-                          <option value="1-1-1">1-1-1</option>
-                          <option value="0-0-1">0-0-1</option>
-                        </select>
+                          <Plus className="w-3.5 h-3.5" /> Add to Prescription
+                        </button>
                       </div>
 
-                      <div>
-                        <label className="block text-[9px] font-bold text-slate-500 uppercase">Duration</label>
-                        <input 
-                          type="text"
-                          value={medInputDuration}
-                          onChange={(e) => setMedInputDuration(e.target.value)}
-                          className="w-full px-2 py-1.5 border border-[#bec8d2] rounded text-xs focus:outline-none"
-                        />
-                      </div>
                     </div>
-
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-500 uppercase">Reminder Times (Comma list)</label>
-                      <input 
-                        type="text"
-                        placeholder="08:00, 20:00"
-                        value={medInputReminders}
-                        onChange={(e) => setMedInputReminders(e.target.value)}
-                        className="w-full px-2.5 py-1.5 border border-[#bec8d2] rounded text-xs focus:outline-none"
-                      />
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleAddMed}
-                      className="w-full bg-[#006591] text-white text-xs font-semibold py-1.5 rounded flex items-center justify-center gap-1 hover:bg-[#004c6e]"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Construct Med to Rx
-                    </button>
                   </div>
 
-                </div>
+                </form>
               </div>
 
-            </form>
+              {/* Patient Longitudinal History Column */}
+              <div className="xl:col-span-1 bg-white border border-[#bec8d2]/30 rounded-xl p-5 shadow-xs flex flex-col max-h-[620px] overflow-y-auto">
+                <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider mb-4 border-b pb-2">Patient History Timeline</h3>
+                <div className="space-y-4">
+                  {activePatientHistory.length === 0 ? (
+                    <p className="text-xs text-slate-400 text-center py-4">No past medical records found for this patient.</p>
+                  ) : (
+                    activePatientHistory.map((event, idx) => {
+                      let badgeColor = "bg-sky-100 text-[#006591]";
+                      if (event.type === "PRESCRIPTION") badgeColor = "bg-emerald-100 text-emerald-800";
+                      if (event.type === "LAB_REPORT") badgeColor = "bg-purple-100 text-purple-800";
+
+                      return (
+                        <div key={idx} className="p-3 bg-stone-50 border border-slate-200 rounded-lg text-[11px] space-y-1">
+                          <div className="flex justify-between items-center">
+                            <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase ${badgeColor}`}>
+                              {event.type}
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-mono font-semibold">{event.date}</span>
+                          </div>
+                          <h4 className="font-bold text-slate-800">{event.title}</h4>
+                          <p className="text-slate-500 font-semibold text-[10px]">{event.subtitle}</p>
+                          <p className="text-[#3e4850] whitespace-pre-wrap mt-1 border-t border-slate-100 pt-1 leading-normal font-medium">
+                            {event.details}
+                          </p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -670,6 +884,23 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
                       <p><strong>Diagnosis:</strong> {pr.diagnosis}</p>
                       <p><strong>Symptoms reported:</strong> {pr.symptoms}</p>
                       {pr.notes && <p className="italic text-[11px] text-slate-550"><strong>Advices:</strong> {pr.notes}</p>}
+                      
+                      {labReports.filter(r => r.patient_id === pr.patient_id).length > 0 && (
+                        <div className="mt-4 pt-3 border-t border-slate-100 space-y-2 text-left">
+                          <span className="text-[9px] font-black uppercase text-[#0ea5e9] tracking-wider block">Uploaded Lab Reports</span>
+                          <div className="grid grid-cols-1 gap-2">
+                            {labReports.filter(r => r.patient_id === pr.patient_id).map(rep => (
+                              <div key={rep.id} className="p-3 bg-stone-50 border border-slate-200 rounded-lg text-xs space-y-1">
+                                <div className="flex justify-between items-center text-[10px] text-slate-400 font-bold">
+                                  <span className="text-slate-800">{rep.test_name}</span>
+                                  <span>{new Date(rep.created_at).toLocaleDateString()}</span>
+                                </div>
+                                <p className="font-mono text-[11px] text-[#3e4850] whitespace-pre-wrap bg-white p-2 rounded border border-slate-100 mt-1">{rep.results_text}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))
@@ -720,13 +951,23 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
                     onChange={(e) => setLabTestName(e.target.value)}
                     className="w-full px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
                   >
-                    <option value="Comprehensive Blood Panel">Comprehensive Blood Panel</option>
-                    <option value="Cardiogram ECG">Cardiogram ECG</option>
-                    <option value="Differential Urine Test">Differential Urine Test</option>
-                    <option value="Chest X-Ray">Chest X-Ray</option>
-                    <option value="Cardiac MRI scan">Cardiac MRI scan</option>
-                    <option value="Head CT Scan">Head CT Scan</option>
+                    <option value="Blood Test">Blood Test</option>
+                    <option value="Urine Test">Urine Test</option>
+                    <option value="X-Ray">X-Ray</option>
+                    <option value="MRI">MRI</option>
+                    <option value="ECG">ECG</option>
                   </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1">Instructions / Notes</label>
+                  <textarea
+                    rows={2}
+                    placeholder="e.g. 12 hours fasting required before draw"
+                    value={labInstructions}
+                    onChange={(e) => setLabInstructions(e.target.value)}
+                    className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                  />
                 </div>
 
                 <button
@@ -914,52 +1155,56 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
                 </form>
               </div>
 
-              {/* List of current active slots */}
+              {/* Weekly Availability Grid */}
               <div className="lg:col-span-2 bg-white border border-[#bec8d2]/30 rounded-xl overflow-hidden shadow-xs">
                 <div className="px-5 py-3 bg-stone-50 border-b border-slate-100 text-xs font-extrabold text-[#0b1c30] flex justify-between items-center">
-                  <span>ACTIVE AVAILABILITY SLOTS</span>
+                  <span>WEEKLY AVAILABILITY GRID</span>
                   <span className="bg-emerald-100 text-emerald-800 font-extrabold px-2 py-0.5 rounded text-[10px]">
                     {availabilitySlots.length} Slots Active
                   </span>
                 </div>
 
-                {availabilitySlots.length === 0 ? (
-                  <div className="p-8 text-center text-slate-400 text-xs">No availability slots configured yet. Setup using the composer panel.</div>
-                ) : (
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-stone-50/50 border-b border-slate-100 text-slate-550 font-bold">
-                        <th className="p-3">DAY OF WEEK</th>
-                        <th className="p-3">HOURS</th>
-                        <th className="p-3">TOKEN MODE & LIMIT</th>
-                        <th className="p-3">COMMAND</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {availabilitySlots.map(slot => (
-                        <tr key={slot.id} className="hover:bg-slate-50/55 transition-colors">
-                          <td className="p-3 font-bold text-slate-800">{slot.day_of_week}</td>
-                          <td className="p-3 font-mono text-slate-600">
-                            {slot.start_time.substring(0, 5)} - {slot.end_time.substring(0, 5)}
-                          </td>
-                          <td className="p-3">
-                            <span className="bg-sky-100 text-[#006591] font-bold px-2 py-0.5 rounded text-[10px]">
-                              {slot.max_tokens} {slot.token_type === "PER_HOUR" ? "per Hour" : "per Day"}
-                            </span>
-                          </td>
-                          <td className="p-3">
-                            <button
-                              onClick={() => handleDeleteAvailabilitySlot(slot.id)}
-                              className="text-red-500 hover:text-red-700 hover:underline font-bold"
-                            >
-                              Remove Slot
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+                <div className="p-4 space-y-2">
+                  {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(day => {
+                    const daySlots = availabilitySlots.filter((s: any) => s.day_of_week === day);
+                    return (
+                      <div key={day} className={`flex items-start gap-4 p-3 rounded-lg border ${
+                        daySlots.length > 0 ? "bg-sky-50/40 border-sky-200/50" : "bg-gray-100 border-gray-200/50"
+                      }`}>
+                        <div className="w-24 shrink-0 pt-1">
+                          <span className="text-xs font-extrabold text-[#0b1c30] uppercase tracking-wide">{day}</span>
+                        </div>
+                        <div className="flex-1 flex flex-wrap gap-2">
+                          {daySlots.length === 0 ? (
+                            <span className="text-[11px] text-slate-400 italic py-1">No slots configured</span>
+                          ) : (
+                            daySlots.map((slot: any) => (
+                              <div
+                                key={slot.id}
+                                className="inline-flex items-center gap-2 bg-sky-100 text-[#006591] font-bold text-[11px] px-3 py-1.5 rounded-full border border-sky-200/60"
+                              >
+                                <span className="font-mono">{slot.start_time.substring(0, 5)} - {slot.end_time.substring(0, 5)}</span>
+                                <span className="text-[9px] bg-white/70 px-1.5 py-0.5 rounded-full">
+                                  {slot.token_type === "PER_HOUR" ? "Per Hour" : "Per Day"}
+                                </span>
+                                <span className="text-[9px] bg-sky-200/60 px-1.5 py-0.5 rounded-full">
+                                  {slot.max_tokens} tokens
+                                </span>
+                                <button
+                                  onClick={() => handleDeleteAvailabilitySlot(slot.id)}
+                                  className="text-red-400 hover:text-red-600 ml-1"
+                                  title="Remove slot"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
             </div>

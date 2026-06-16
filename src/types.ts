@@ -24,6 +24,7 @@ export enum AppointmentStatus {
 
 export enum LabRequestStatus {
   PENDING = "PENDING",
+  IN_PROGRESS = "IN_PROGRESS",
   COMPLETED = "COMPLETED"
 }
 
@@ -151,8 +152,10 @@ export interface PrescriptionItem {
   id: string;
   prescription_id: string;
   medicine_name: string;
-  dosage: string; // e.g. "1-0-1"
+  dosage: string; // e.g. "650mg"
+  frequency?: string; // e.g. "Morning, Night"
   duration: string; // e.g. "5 days"
+  instructions?: string; // e.g. "After Food"
   reminder_time: string; // e.g. "08:00, 20:00"
 }
 
@@ -166,6 +169,7 @@ export interface LabRequest {
   hospital_id: string;
   test_name: string; // "Blood Test" etc.
   status: LabRequestStatus;
+  instructions?: string;
   created_at: string;
 }
 
@@ -222,3 +226,25 @@ export interface MedicineReminder {
   taken: boolean;
   dateStr: string; // "2026-06-15"
 }
+
+export interface FamilyMember {
+  id: string;
+  patient_id: string;
+  full_name: string;
+  relationship: string; // 'Self' | 'Father' | 'Mother' | 'Child' etc.
+  gender?: string;
+  dob?: string;
+  created_at?: string;
+}
+
+export interface StaffActivityLog {
+  id: string;
+  actor_id: string;
+  actor_name: string;
+  action_type: string;
+  details: string;
+  hospital_id?: string;
+  created_at: string;
+}
+
+

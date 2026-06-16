@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from "react";
 import { Database } from "../../api";
-import { User, Appointment, Prescription, PrescriptionItem, LabRequest, LabReport, Notification, Chat, Message, MedicineReminder, AppointmentStatus, LabRequestStatus, UserRole, UserStatus, Hospital, DoctorExt, Profile, DoctorAvailability } from "../../types";
+import { User, Appointment, Prescription, PrescriptionItem, LabRequest, LabReport, Notification, Chat, Message, MedicineReminder, AppointmentStatus, LabRequestStatus, UserRole, UserStatus, Hospital, DoctorExt, Profile, DoctorAvailability, FamilyMember } from "../../types";
 import { supabase } from "../../supabaseClient";
 import { 
-  Heart, Calendar, FileText, ClipboardList, Bell, MessageSquare, 
-  History, User as UserIcon, LogOut, CheckCircle, Clock, MapPin, 
-  AlertCircle, Sparkles, Send, Eye, Download, Search, CheckSquare, Plus, Activity
+  Activity, Calendar, Clock, ClipboardList, FileText, History, 
+  MessageSquare, Bell, User as UserIcon, LogOut, CheckCircle2, ChevronRight, 
+  Search, ShieldAlert, Sparkles, MapPin, CheckCircle, Eye, Download, Info, Plus, Users, Send
 } from "lucide-react";
+import { jsPDF } from "jspdf";
 
 interface PatientProps {
   user: User;
@@ -14,7 +15,7 @@ interface PatientProps {
 }
 
 export default function DashboardPatient({ user, onLogout }: PatientProps) {
-  const [activeTab, setActiveTab] = useState<"overview" | "book" | "appointments" | "prescriptions" | "labs" | "chat" | "reminders" | "profile">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "book" | "appointments" | "prescriptions" | "labs" | "chat" | "reminders" | "profile" | "history" | "notifications" | "family">("overview");
 
   // DB Sync States
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -26,7 +27,15 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [reminders, setReminders] = useState<MedicineReminder[]>([]);
-  const [profile, setProfile] = useState<any>(null);
+  // Family Profile States
+  const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
+  const [famName, setFamName] = useState("");
+  const [famRelationship, setFamRelationship] = useState("Father");
+  const [famGender, setFamGender] = useState("Male");
+  const [famDob, setFamDob] = useState("");
+  const [famSuccess, setFamSuccess] = useState(false);
+  const [bookingFor, setBookingFor] = useState("self");
+  const [profile, setProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   
   // State cache for select selectors
@@ -88,6 +97,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
       const userChats = (await Database.getChats()).filter(c => c.participant1_id === user.id || c.participant2_id === user.id);
       const msgs = await Database.getMessages();
       const rems = (await Database.getReminders()).filter(r => r.patient_id === user.id);
+      const famList = await Database.getFamilyMembers(user.id);
       const profiles = await Database.getProfiles();
       const foundProfile = profiles.find(p => p.id === user.id);
       const hospitals = await Database.getHospitals();
@@ -113,6 +123,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
       setChats(userChats);
       setMessages(msgs);
       setReminders(rems);
+      setFamilyMembers(famList);
       setProfile(foundProfile);
       setHospitalsList(hospitals);
       setDoctorList(activeDoctors);
@@ -165,6 +176,276 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     setReminders(updated.filter(r => r.patient_id === user.id));
   };
 
+  const handleAddFamilyMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!famName.trim()) {
+      alert("Please enter a family member's full name.");
+      return;
+    }
+
+    try {
+      const newMember: FamilyMember = {
+        id: crypto.randomUUID(),
+        patient_id: user.id,
+        full_name: famName,
+        relationship: famRelationship,
+        gender: famGender,
+        dob: famDob || undefined
+      };
+
+      await Database.saveFamilyMembers([newMember]);
+      setFamSuccess(true);
+      setFamName("");
+      setFamDob("");
+      
+      const famList = await Database.getFamilyMembers(user.id);
+      setFamilyMembers(famList);
+
+      setTimeout(() => setFamSuccess(false), 2000);
+    } catch (err: any) {
+      alert("Error adding family member: " + err.message);
+    }
+  };
+
+  const handleDeleteFamilyMember = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this family member profile?")) return;
+    try {
+      await Database.deleteFamilyMember(id);
+      const famList = await Database.getFamilyMembers(user.id);
+      setFamilyMembers(famList);
+    } catch (err: any) {
+      alert("Error deleting family member: " + err.message);
+    }
+  };
+
+  // Upgraded PDF Generation Templates
+  const downloadPrescriptionPDF = (pr: Prescription, items: PrescriptionItem[]) => {
+    const doc = new jsPDF();
+    const apt = appointments.find(a => a.id === pr.appointment_id);
+    const specialization = apt?.doctor_specialization || "Clinical Specialist";
+    
+    // Header box/border
+    doc.setDrawColor(14, 165, 233);
+    doc.setLineWidth(1.5);
+    doc.line(10, 10, 200, 10);
+    doc.line(10, 10, 10, 287);
+    doc.line(200, 10, 200, 287);
+    doc.line(10, 287, 200, 287);
+    
+    // Draw cross logo
+    doc.setFillColor(14, 165, 233);
+    doc.rect(20, 20, 15, 5, 'F');
+    doc.rect(25, 15, 5, 15, 'F');
+    
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.setTextColor(11, 28, 48);
+    doc.text(pr.hospital_name.toUpperCase(), 40, 23);
+    
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(120, 120, 120);
+    doc.text("CAREFLOW HEALTHCARE PORTAL · SECURE CLINICAL PRESCRIPTION", 40, 28);
+    
+    doc.setLineWidth(0.5);
+    doc.setDrawColor(220, 220, 220);
+    doc.line(20, 35, 190, 35);
+    
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(11, 28, 48);
+    doc.text("PATIENT INFORMATION", 20, 45);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Name: ${pr.patient_name}`, 20, 50);
+    doc.text(`Gender: ${pr.patient_gender || "N/A"} · DOB: ${pr.patient_dob || "N/A"}`, 20, 55);
+    
+    doc.setFont("helvetica", "bold");
+    doc.text("CLINICIAN INFORMATION", 120, 45);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Doctor: Dr. ${pr.doctor_name}`, 120, 50);
+    doc.text(`Specialization: ${specialization}`, 120, 55);
+    doc.text(`Date: ${new Date(pr.created_at).toLocaleDateString()}`, 120, 60);
+    
+    doc.line(20, 65, 190, 65);
+    
+    doc.setFont("helvetica", "bold");
+    doc.text("CLINICAL DIAGNOSIS", 20, 73);
+    const diagnosisLines = doc.splitTextToSize(pr.diagnosis, 164);
+    const boxHeight = diagnosisLines.length * 5 + 6;
+    doc.setDrawColor(220, 220, 220);
+    doc.rect(20, 76, 170, boxHeight);
+    doc.setFont("helvetica", "normal");
+    doc.text(diagnosisLines, 23, 81);
+    
+    const symptomY = 76 + boxHeight + 8;
+    doc.setFont("helvetica", "bold");
+    doc.text("RECORDED SYMPTOMS", 20, symptomY);
+    const symptomsLines = doc.splitTextToSize(pr.symptoms || "None reported", 164);
+    const symptomsBoxHeight = symptomsLines.length * 5 + 6;
+    doc.rect(20, symptomY + 3, 170, symptomsBoxHeight);
+    doc.setFont("helvetica", "normal");
+    doc.text(symptomsLines, 23, symptomY + 8);
+    
+    const medHeaderY = symptomY + symptomsBoxHeight + 12;
+    doc.setFont("helvetica", "bold");
+    doc.text("MEDICATIONS PRESCRIBED", 20, medHeaderY);
+    
+    doc.setFillColor(245, 247, 250);
+    doc.rect(20, medHeaderY + 5, 170, 8, 'F');
+    
+    doc.setFontSize(8);
+    doc.setTextColor(60, 60, 60);
+    doc.text("Medicine Name", 22, medHeaderY + 10);
+    doc.text("Dosage", 70, medHeaderY + 10);
+    doc.text("Frequency", 95, medHeaderY + 10);
+    doc.text("Duration", 130, medHeaderY + 10);
+    doc.text("Instructions", 155, medHeaderY + 10);
+    
+    let y = medHeaderY + 18;
+    items.forEach((item, idx) => {
+      if (idx % 2 === 1) {
+        doc.setFillColor(250, 250, 250);
+        doc.rect(20, y - 5, 170, 7, 'F');
+      }
+      
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(11, 28, 48);
+      doc.text(item.medicine_name, 22, y);
+      doc.text(item.dosage, 70, y);
+      doc.text(item.frequency || "Daily", 95, y);
+      doc.text(item.duration, 130, y);
+      doc.text(item.instructions || "After Food", 155, y);
+      
+      doc.setDrawColor(240, 240, 240);
+      doc.line(20, y + 2, 190, y + 2);
+      
+      y += 10;
+    });
+    
+    if (pr.notes) {
+      y += 5;
+      doc.setFont("helvetica", "bold");
+      doc.text("LIFESTYLE INSTRUCTIONS & CLINICAL NOTES", 20, y);
+      doc.setFont("helvetica", "normal");
+      const notesLines = doc.splitTextToSize(pr.notes, 164);
+      doc.text(notesLines, 20, y + 5);
+      y += notesLines.length * 5 + 10;
+    }
+    
+    doc.setDrawColor(200, 200, 200);
+    doc.line(130, 245, 185, 245);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.text(`Dr. ${pr.doctor_name}`, 130, 250);
+    doc.setFont("helvetica", "normal");
+    doc.text(specialization, 130, 255);
+    doc.text("Authorized Consulting Specialist", 130, 260);
+    doc.text("Digitally Signed", 130, 265);
+    
+    doc.setFontSize(7);
+    doc.setTextColor(155, 155, 155);
+    doc.text("CareFlow Digital Network · Secure Health Document · Ref: RX-" + pr.id.substring(0,8).toUpperCase(), 20, 280);
+    
+    doc.save(`Prescription_${pr.patient_name.replace(/\s+/g, '_')}_${new Date(pr.created_at).toISOString().split('T')[0]}.pdf`);
+  };
+
+  const downloadLabReportPDF = (rep: LabReport) => {
+    const doc = new jsPDF();
+    
+    doc.setDrawColor(16, 185, 129);
+    doc.setLineWidth(1.5);
+    doc.line(10, 10, 200, 10);
+    doc.line(10, 10, 10, 287);
+    doc.line(200, 10, 200, 287);
+    doc.line(10, 287, 200, 287);
+    
+    doc.setFillColor(16, 185, 129);
+    doc.rect(20, 20, 15, 5, 'F');
+    doc.rect(25, 15, 5, 15, 'F');
+    
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.setTextColor(11, 28, 48);
+    const apt = appointments.find(a => a.id === rep.request_id || a.doctor_name === rep.doctor_name);
+    const hospitalName = apt?.hospital_name || "CAREFLOW GENERAL HOSPITAL";
+    doc.text(hospitalName.toUpperCase(), 40, 23);
+    
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(120, 120, 120);
+    doc.text("CLINICAL BIOCHEMISTRY, HEMATOLOGY AND MEDICAL IMAGING RECORDS", 40, 28);
+    
+    doc.setLineWidth(0.5);
+    doc.setDrawColor(220, 220, 220);
+    doc.line(20, 35, 190, 35);
+    
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(11, 28, 48);
+    doc.text("PATIENT DETAILED PROFILE", 20, 45);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Name: ${rep.patient_name}`, 20, 50);
+    doc.text(`Patient UID: ${rep.patient_id.substring(0,8).toUpperCase()}`, 20, 55);
+    
+    doc.setFont("helvetica", "bold");
+    doc.text("DIAGNOSTICS METADATA", 120, 45);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Attending Doctor: Dr. ${rep.doctor_name}`, 120, 50);
+    doc.text(`Finalization Date: ${new Date(rep.created_at).toLocaleDateString()}`, 120, 55);
+    
+    doc.line(20, 62, 190, 62);
+    
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.text(`DIAGNOSTIC TEST REPORT: ${rep.test_name.toUpperCase()}`, 20, 71);
+    
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.text("PATHOLOGY PARAMETERS & FINDINGS", 20, 82);
+    
+    doc.setFillColor(248, 249, 250);
+    doc.rect(20, 87, 170, 95, 'F');
+    
+    doc.setFont("courier", "bold");
+    doc.setFontSize(8.5);
+    doc.setTextColor(40, 50, 60);
+    
+    const lines = doc.splitTextToSize(rep.results_text, 160);
+    doc.text(lines, 25, 94);
+    
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
+    doc.setTextColor(11, 28, 48);
+    doc.text("CLINICAL REFERENCE INDEX", 20, 192);
+    
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(110, 110, 110);
+    doc.text("· Hemoglobin Rate: Male: 13.8 - 17.2 g/dL | Female: 12.1 - 15.1 g/dL", 20, 198);
+    doc.text("· Pulse Rhythm: 60 - 100 bpm (Normal sinus rhythm)", 20, 204);
+    doc.text("· MRI / X-Ray Findings: Consult radiologist clinical summaries.", 20, 210);
+    
+    const techProfile = profilesList.find(p => p.id === rep.uploaded_by);
+    const techName = techProfile?.full_name || "Laboratory Specialist";
+    
+    doc.setLineWidth(0.5);
+    doc.setDrawColor(200, 200, 200);
+    doc.line(130, 245, 185, 245);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.text(techName, 130, 250);
+    doc.setFont("helvetica", "normal");
+    doc.text("CareFlow Clinic Pathology", 130, 255);
+    doc.text("Verified & Authorized", 130, 260);
+    
+    doc.setFontSize(7);
+    doc.setTextColor(155, 155, 155);
+    doc.text("CareFlow Diagnostics · Secure Lab File · Ref: LAB-" + rep.id.substring(0,8).toUpperCase(), 20, 280);
+    
+    doc.save(`LabReport_${rep.patient_name.replace(/\s+/g, '_')}_${rep.test_name.replace(/\s+/g, '_')}.pdf`);
+  };
+
   // Action: Book Appointment
   const handleConfirmBooking = async () => {
     if (!selectedHospitalId || !selectedDoctorId || !selectedDate || !selectedTimeSlot) {
@@ -194,7 +475,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     const newAppointment: Appointment = {
       id: crypto.randomUUID(),
       patient_id: user.id,
-      patient_name: profile?.full_name || "Unknown Patient",
+      patient_name: bookingFor === "self" ? (profile?.full_name || "Unknown Patient") : bookingFor,
       doctor_id: selectedDoctorId,
       doctor_name: docProfile.full_name,
       doctor_specialization: docExt.specialization,
@@ -220,6 +501,16 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
       `Your appointment token #${tokenVal} under ${docProfile.full_name} is confirmed.`,
       "APPOINTMENT"
     );
+
+    // Notify doctor
+    await Database.addNotification(
+      selectedDoctorId,
+      "New Appointment Booked",
+      `Patient ${bookingFor === "self" ? (profile?.full_name || "Patient") : bookingFor} booked an appointment (Token #${tokenVal}) for ${selectedDate} at ${selectedTimeSlot}.`,
+      "APPOINTMENT"
+    );
+
+    setBookingFor("self");
     
     // Create automatic private chat with doctor if none exists
     const currentChats = await Database.getChats();
@@ -267,6 +558,19 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
 
     allMsgs.push(newMsg);
     await Database.saveMessages(allMsgs);
+
+    // Notify recipient of chat message
+    const activeChat = chats.find(c => c.id === activeChatId);
+    if (activeChat) {
+      const recipientId = activeChat.participant1_id === user.id ? activeChat.participant2_id : activeChat.participant1_id;
+      await Database.addNotification(
+        recipientId,
+        "New message from Patient",
+        `${profile?.full_name || "Patient"} sent: "${chatInput.substring(0, 40)}${chatInput.length > 40 ? "..." : ""}"`,
+        "CHAT"
+      );
+    }
+
     setChatInput("");
     loadDatabase();
 
@@ -357,41 +661,6 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
 
   const hasNotifsCount = notifications.filter(n => !n.is_read).length;
 
-  // Print simulator
-  const handlePrint = (title: string, content: string) => {
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) {
-      alert("Popup blocked. Content downloaded to console.");
-      console.log(`--- ${title} ---\n${content}`);
-      return;
-    }
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>${title}</title>
-          <style>
-            body { font-family: monospace; padding: 40px; color: #111; line-height: 1.6; }
-            .header { border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
-            .footer { border-top: 1px solid #ccc; margin-top: 50px; font-size: 10px; color: #666; text-align: center; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h2>CAREFLOW HEALTHCARE SYSTEMS PROTOCOL</h2>
-            <p>Date Generated: ${new Date().toLocaleString()}</p>
-          </div>
-          <h3>${title}</h3>
-          <pre style="white-space: pre-wrap; font-size: 12px;">${content}</pre>
-          <div class="footer">
-            <p>CareFlow Smart Security certified document. Simulated via Client Viewport.</p>
-          </div>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-    printWindow.print();
-  };
-
   return (
     <div id="patient-portal-core" className="min-h-screen bg-[#f8f9ff] flex flex-col md:flex-row">
       
@@ -416,8 +685,11 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
               { id: "appointments", icon: Calendar, label: "Scheduled Queue" },
               { id: "prescriptions", icon: ClipboardList, label: "Rx Prescriptions" },
               { id: "labs", icon: FileText, label: "Diagnostic Labs" },
+              { id: "history", icon: History, label: "Medical History" },
               { id: "chat", icon: MessageSquare, label: "Clinical Chat" },
-              { id: "reminders", icon: Clock, label: "Meds Reminders" }
+              { id: "reminders", icon: Clock, label: "Meds Reminders" },
+              { id: "family", icon: Users, label: "Family Profiles" },
+              { id: "notifications", icon: Bell, label: "Notification Center" }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -432,6 +704,11 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                 {tab.label}
                 {tab.id === "chat" && messages.filter(m => !m.read_status && m.sender_id !== user.id).length > 0 && (
                   <span className="w-2 h-2 rounded-full bg-red-500 ml-auto" />
+                )}
+                {tab.id === "notifications" && hasNotifsCount > 0 && (
+                  <span className="bg-rose-500 text-white font-bold px-1.5 py-0.5 rounded-full text-[9px] ml-auto animate-pulse">
+                    {hasNotifsCount}
+                  </span>
                 )}
               </button>
             ))}
@@ -493,7 +770,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
               <div className="bg-white p-5 rounded-xl border border-[#bec8d2]/30 shadow-xs">
                 <div className="flex items-center justify-between text-slate-500 mb-2">
                   <span className="text-xs font-semibold">Blood Pressure</span>
-                  <Heart className="w-4 h-4 text-rose-500" />
+                  <Activity className="w-4 h-4 text-rose-500" />
                 </div>
                 <div className="text-2xl font-black text-rose-600">--/-- <span className="text-xs text-[#3e4850]">mmHg</span></div>
                 <p className="text-[10px] text-slate-500 mt-1">No recorded data</p>
@@ -524,33 +801,40 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
               {/* Daily Medicine scheduler */}
               <div className="bg-white rounded-xl border border-[#bec8d2]/30 p-5 shadow-xs">
                 <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider mb-4">Today's Medicine Schedule</h3>
-                {reminders.length === 0 ? (
-                  <p className="text-xs text-slate-400">No diagnostic medication reminders set for today.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {reminders.map(rem => (
-                      <div key={rem.id} className="flex items-center justify-between p-3 bg-stone-50 border border-slate-100 rounded-lg">
-                        <div className="flex items-center gap-3">
-                          <input 
-                            type="checkbox"
-                            checked={rem.taken}
-                            onChange={() => handleToggleReminder(rem.id)}
-                            className="w-4 h-4 rounded text-[#006591] focus:ring-[#006591]"
-                          />
-                          <div>
-                            <p className="text-xs font-bold text-slate-800">{rem.medicine_name}</p>
-                            <p className="text-[10px] text-slate-500">Dosage: {rem.dosage} · Time: {rem.time}</p>
+                {(() => {
+                  const todayStr = new Date().toISOString().split("T")[0];
+                  const todaysReminders = reminders.filter(r => r.dateStr === todayStr);
+
+                  if (todaysReminders.length === 0) {
+                    return <p className="text-xs text-slate-400">No diagnostic medication reminders set for today.</p>;
+                  }
+
+                  return (
+                    <div className="space-y-2">
+                      {todaysReminders.map(rem => (
+                        <div key={rem.id} className="flex items-center justify-between p-3 bg-stone-50 border border-slate-100 rounded-lg">
+                          <div className="flex items-center gap-3">
+                            <input 
+                              type="checkbox"
+                              checked={rem.taken}
+                              onChange={() => handleToggleReminder(rem.id)}
+                              className="w-4 h-4 rounded text-[#006591] focus:ring-[#006591]"
+                            />
+                            <div>
+                              <p className="text-xs font-bold text-slate-800">{rem.medicine_name}</p>
+                              <p className="text-[10px] text-slate-500">Dosage: {rem.dosage} · Time: {rem.time}</p>
+                            </div>
                           </div>
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                            rem.taken ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+                          }`}>
+                            {rem.taken ? "COMPLETED" : "PENDING SCHEDULE"}
+                          </span>
                         </div>
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
-                          rem.taken ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
-                        }`}>
-                          {rem.taken ? "COMPLETED" : "PENDING SCHEDULE"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Recent Consultation record */}
@@ -780,21 +1064,36 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
 
                 {/* Step 8: Confirmation actions */}
                 {selectedDoctorId && selectedTimeSlot && (
-                  <div className="pt-4 border-t border-slate-100 flex justify-end gap-3">
-                    <button 
-                      type="button" 
-                      onClick={() => { setSelectedDoctorId(""); setSelectedTimeSlot(""); }} 
-                      className="text-xs text-slate-500 hover:underline px-4 py-2"
-                    >
-                      Reset selection
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleConfirmBooking}
-                      className="bg-emerald-600 text-white text-xs font-bold px-6 py-2.5 rounded-lg hover:bg-emerald-700 flex items-center gap-2"
-                    >
-                      <CheckCircle className="w-4 h-4" /> Complete Secure Booking
-                    </button>
+                  <div className="pt-4 border-t border-slate-100 space-y-4">
+                    <div className="bg-stone-50 p-4 rounded-lg border border-slate-200 text-left">
+                      <label className="block text-[10px] font-bold text-[#3e4850] uppercase mb-1.5">Who is this appointment for?</label>
+                      <select
+                        value={bookingFor}
+                        onChange={(e) => setBookingFor(e.target.value)}
+                        className="px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none focus:border-[#006591]"
+                      >
+                        <option value="self">Self ({profile?.full_name})</option>
+                        {familyMembers.map(fam => (
+                          <option key={fam.id} value={fam.full_name}>{fam.full_name} ({fam.relationship})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex justify-end gap-3">
+                      <button 
+                        type="button" 
+                        onClick={() => { setSelectedDoctorId(""); setSelectedTimeSlot(""); }} 
+                        className="text-xs text-slate-500 hover:underline px-4 py-2"
+                      >
+                        Reset selection
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleConfirmBooking}
+                        className="bg-[#006591] hover:bg-[#004c6e] text-white font-extrabold text-xs px-6 py-2.5 rounded-lg shadow-sm"
+                      >
+                        Confirm Booking & Allocate Token
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -812,55 +1111,100 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
               <p className="text-xs text-[#3e4850]">View queue, arrival tokens, and receptionist check-in status.</p>
             </div>
 
-            <div className="bg-white border border-[#bec8d2]/30 rounded-xl overflow-hidden shadow-xs">
-              {appointments.length === 0 ? (
-                <div className="p-8 text-center text-slate-400 text-xs">You have no scheduled appointments found.</div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  {appointments.map(apt => (
-                    <div key={apt.id} className="p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <span className="text-sm font-bold text-[#0b1c30]">{apt.doctor_name}</span>
-                          <span className="text-[10px] bg-[#eff4ff] text-[#006591] font-bold px-2 py-0.5 rounded">
-                            {apt.doctor_specialization}
-                          </span>
-                        </div>
-                        <p className="text-xs text-[#3e4850] mt-1">{apt.hospital_name}</p>
-                        <div className="flex items-center gap-4 text-[10px] text-slate-400 mt-2">
-                          <span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> {apt.date}</span>
-                          <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> Time: {apt.time}</span>
-                          <span className="font-bold text-[#006591]">Queue Token: #{apt.token}</span>
-                        </div>
-                      </div>
+            {/* Search & Filter Controls */}
+            {(() => {
+              const [aptSearch, setAptSearch] = React.useState("");
+              const [aptStatusFilter, setAptStatusFilter] = React.useState("ALL");
 
-                      <div className="flex items-center gap-3">
-                        <span className={`text-xs font-bold px-3 py-1 rounded-full ${
-                          apt.status === "COMPLETED" ? "bg-emerald-100 text-emerald-800" :
-                          apt.status === "CHECKED_IN" ? "bg-amber-100 text-amber-800" : "bg-[#eff4ff] text-[#006591]"
-                        }`}>
-                          {apt.status}
-                        </span>
-                        
-                        {apt.status === "BOOKED" && (
-                          <button 
-                            onClick={async () => {
-                              const appts = await Database.getAppointments();
-                              const updated = appts.map(a => a.id === apt.id ? { ...a, status: AppointmentStatus.CANCELLED } : a);
-                              await Database.saveAppointments(updated);
-                              loadDatabase();
-                            }}
-                            className="text-[10px] text-red-500 hover:underline hover:text-red-700"
-                          >
-                            Cancel
-                          </button>
-                        )}
-                      </div>
+              const filteredAppointments = appointments.filter(apt => {
+                const matchesSearch = !aptSearch.trim() || 
+                  apt.doctor_name.toLowerCase().includes(aptSearch.toLowerCase()) ||
+                  apt.hospital_name.toLowerCase().includes(aptSearch.toLowerCase());
+                const matchesStatus = aptStatusFilter === "ALL" || apt.status === aptStatusFilter;
+                return matchesSearch && matchesStatus;
+              });
+
+              return (
+                <>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="text"
+                        placeholder="Search by doctor name or hospital..."
+                        value={aptSearch}
+                        onChange={(e) => setAptSearch(e.target.value)}
+                        className="w-full pl-10 pr-3 py-2.5 border border-[#bec8d2] rounded-lg text-xs focus:outline-none focus:border-[#006591] bg-white"
+                      />
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    <select
+                      value={aptStatusFilter}
+                      onChange={(e) => setAptStatusFilter(e.target.value)}
+                      className="px-3 py-2.5 border border-[#bec8d2] rounded-lg text-xs font-semibold bg-white focus:outline-none focus:border-[#006591] min-w-[160px]"
+                    >
+                      <option value="ALL">All Statuses</option>
+                      <option value="BOOKED">BOOKED</option>
+                      <option value="CHECKED_IN">CHECKED_IN</option>
+                      <option value="IN_CONSULTATION">IN_CONSULTATION</option>
+                      <option value="COMPLETED">COMPLETED</option>
+                      <option value="CANCELLED">CANCELLED</option>
+                    </select>
+                  </div>
+
+                  <div className="bg-white border border-[#bec8d2]/30 rounded-xl overflow-hidden shadow-xs">
+                    {filteredAppointments.length === 0 ? (
+                      <div className="p-8 text-center text-slate-400 text-xs">
+                        {appointments.length === 0 ? "You have no scheduled appointments found." : "No appointments match your search criteria."}
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100">
+                        {filteredAppointments.map(apt => (
+                          <div key={apt.id} className="p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                            <div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-sm font-bold text-[#0b1c30]">{apt.doctor_name}</span>
+                                <span className="text-[10px] bg-[#eff4ff] text-[#006591] font-bold px-2 py-0.5 rounded">
+                                  {apt.doctor_specialization}
+                                </span>
+                              </div>
+                              <p className="text-xs text-[#3e4850] mt-1">{apt.hospital_name}</p>
+                              <div className="flex items-center gap-4 text-[10px] text-slate-400 mt-2">
+                                <span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> {apt.date}</span>
+                                <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> Time: {apt.time}</span>
+                                <span className="font-bold text-[#006591]">Queue Token: #{apt.token}</span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                              <span className={`text-xs font-bold px-3 py-1 rounded-full ${
+                                apt.status === "COMPLETED" ? "bg-emerald-100 text-emerald-800" :
+                                apt.status === "CHECKED_IN" ? "bg-amber-100 text-amber-800" : "bg-[#eff4ff] text-[#006591]"
+                              }`}>
+                                {apt.status}
+                              </span>
+                              
+                              {apt.status === "BOOKED" && (
+                                <button 
+                                  onClick={async () => {
+                                    const appts = await Database.getAppointments();
+                                    const updated = appts.map(a => a.id === apt.id ? { ...a, status: AppointmentStatus.CANCELLED } : a);
+                                    await Database.saveAppointments(updated);
+                                    loadDatabase();
+                                  }}
+                                  className="text-[10px] text-red-500 hover:underline hover:text-red-700"
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -886,15 +1230,15 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                           <p className="text-[10px] text-[#3e4850] mt-0.5">Clinic: {pr.hospital_name} · Prescribed by Dr. {pr.doctor_name}</p>
                           <p className="text-[11px] font-semibold text-[#006591] mt-2">Recorded symptoms: {pr.symptoms}</p>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 shrink-0">
                           <button 
                             onClick={() => setViewingPrescription(pr)}
-                            className="bg-sky-550 border border-[#bec8d2] text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-slate-50 flex items-center gap-1.5"
+                            className="bg-stone-50 border border-[#bec8d2] text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-slate-100 flex items-center gap-1.5 text-slate-700"
                           >
                             <Eye className="w-3.5 h-3.5" /> Preview
                           </button>
                           <button 
-                            onClick={() => handlePrint(`Prescription_${pr.id}`, `DIAGNOSIS: ${pr.diagnosis}\nDOCTOR: Dr. ${pr.doctor_name}\nHOSPITAL: ${pr.hospital_name}\nSYMPTOMS: ${pr.symptoms}\nMEDICATIONS:\n${prescItems.map(m => `- ${m.medicine_name}: ${m.dosage} for ${m.duration} (Timing: ${m.reminder_time})`).join("\n")}\nNOTES: ${pr.notes}`)}
+                            onClick={() => downloadPrescriptionPDF(pr, prescItems)}
                             className="bg-[#006591] text-white text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-[#004c6e] flex items-center gap-1.5"
                           >
                             <Download className="w-3.5 h-3.5" /> PDF
@@ -903,15 +1247,17 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                       </div>
 
                       <div className="pt-4 space-y-2">
-                        <span className="block text-[10px] font-black uppercase text-slate-500 tracking-wider">PRESCRIBED PHARMACIES</span>
+                        <span className="block text-[10px] font-black uppercase text-slate-500 tracking-wider">PRESCRIBED MEDICATIONS</span>
                         {prescItems.length === 0 ? (
                           <p className="text-xs text-slate-400">No pharmacotherapy records.</p>
                         ) : (
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             {prescItems.map(item => (
-                              <div key={item.id} className="bg-stone-50 border border-slate-200/50 p-3 rounded-lg text-xs leading-relaxed">
+                              <div key={item.id} className="bg-stone-50 border border-slate-200/50 p-3 rounded-lg text-xs leading-relaxed text-left">
                                 <p className="font-bold text-[#0b1c30]">{item.medicine_name}</p>
                                 <p className="text-slate-500">Dosage: {item.dosage} · Duration: {item.duration}</p>
+                                {item.frequency && <p className="text-slate-500 text-[10px]">Frequency: <span className="font-bold">{item.frequency}</span></p>}
+                                {item.instructions && <p className="text-indigo-600 font-semibold text-[10px]">{item.instructions}</p>}
                                 <p className="text-slate-400 text-[10px]">Reminders: <span className="text-[#0ea5e9] font-mono">{item.reminder_time}</span></p>
                               </div>
                             ))}
@@ -933,46 +1279,84 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
         )}
 
         {/* LAB REPORTS TAB */}
+        {/* LAB REPORTS TAB */}
         {activeTab === "labs" && (
           <div className="space-y-6">
             <div>
               <h1 className="text-2xl font-black text-[#0b1c30]">Your Laboratory Test Reports</h1>
-              <p className="text-xs text-[#3e4850]">View blood panel parameters, imaging metrics, and diagnostics logs.</p>
+              <p className="text-xs text-[#3e4850]">View active laboratory requests and pathology reports.</p>
             </div>
 
-            <div className="grid grid-cols-1 gap-4">
-              {labReports.length === 0 ? (
-                <div className="bg-white p-8 border border-[#bec8d2]/30 rounded-xl text-center text-slate-405 text-xs">No reports generated or uploaded by lab tech yet.</div>
-              ) : (
-                labReports.map(rep => (
-                  <div key={rep.id} className="bg-white border border-[#bec8d2]/30 rounded-xl p-5 shadow-xs flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                    <div>
-                      <span className="inline-flex px-2 py-0.5 text-[8px] font-black uppercase tracking-wider bg-teal-100 text-teal-800 rounded-full mb-1">
-                        🔬 PATHOLOGY LAB CLOSED RESULTS
-                      </span>
-                      <h3 className="font-extrabold text-[#0b1c30] text-sm">{rep.test_name}</h3>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        Requested by Dr. {rep.doctor_name} · Generated at {new Date(rep.created_at).toLocaleDateString()}
-                      </p>
-                    </div>
-
-                    <div className="flex gap-2 shrink-0">
-                      <button 
-                        onClick={() => setViewingLabReport(rep)}
-                        className="bg-white text-slate-700 border border-[#bec8d2] text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-slate-50 flex items-center gap-1.5"
-                      >
-                        <Eye className="w-3.5 h-3.5" /> Read values
-                      </button>
-                      <button 
-                        onClick={() => handlePrint(`LabReport_${rep.id}`, `TEST CATEGORY: ${rep.test_name}\nATTENDING CLINICIAN: Dr. ${rep.doctor_name}\nPATIENT NAME: ${rep.patient_name}\n\nMETRIC PARAMETERS:\n${rep.results_text}`)}
-                        className="bg-[#006591] text-white text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-[#004c6e] flex items-center gap-1.5"
-                      >
-                        <Download className="w-3.5 h-3.5" /> PDF
-                      </button>
-                    </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              
+              {/* Requested / Active Tests Column */}
+              <div className="space-y-4">
+                <h3 className="font-extrabold text-sm uppercase text-[#0b1c30] tracking-wider border-b pb-2">Requested Tests</h3>
+                {labRequests.filter(r => r.status === LabRequestStatus.PENDING || r.status === LabRequestStatus.IN_PROGRESS).length === 0 ? (
+                  <div className="bg-white p-6 border border-[#bec8d2]/30 rounded-xl text-center text-slate-400 text-xs">No active laboratory requests.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {labRequests.filter(r => r.status === LabRequestStatus.PENDING || r.status === LabRequestStatus.IN_PROGRESS).map(req => (
+                      <div key={req.id} className="bg-white border border-[#bec8d2]/30 rounded-xl p-4 shadow-xs space-y-2 text-left">
+                        <div className="flex justify-between items-center">
+                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                            req.status === LabRequestStatus.IN_PROGRESS ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-800"
+                          }`}>
+                            {req.status === LabRequestStatus.IN_PROGRESS ? "IN PROGRESS" : "PENDING"}
+                          </span>
+                          <span className="text-[9px] text-slate-400 font-mono">{new Date(req.created_at).toLocaleDateString()}</span>
+                        </div>
+                        <h4 className="font-bold text-slate-800 text-sm">{req.test_name}</h4>
+                        <p className="text-[10px] text-slate-500">Ordered by: Dr. {req.doctor_name}</p>
+                        {req.instructions && (
+                          <div className="p-2 bg-stone-50 border border-slate-100 rounded text-[10px] text-slate-650">
+                            <strong>Instructions:</strong> {req.instructions}
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                ))
-              )}
+                )}
+              </div>
+
+              {/* Completed Pathology Reports Column */}
+              <div className="space-y-4">
+                <h3 className="font-extrabold text-sm uppercase text-[#0b1c30] tracking-wider border-b pb-2">Finalized Reports</h3>
+                {labReports.length === 0 ? (
+                  <div className="bg-white p-6 border border-[#bec8d2]/30 rounded-xl text-center text-slate-400 text-xs">No reports generated yet.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {labReports.map(rep => (
+                      <div key={rep.id} className="bg-white border border-[#bec8d2]/30 rounded-xl p-4 shadow-xs flex justify-between items-center gap-4 text-left">
+                        <div>
+                          <span className="text-[8px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">
+                            🔬 COMPLETED
+                          </span>
+                          <h4 className="font-bold text-slate-800 text-sm mt-1">{rep.test_name}</h4>
+                          <p className="text-[10px] text-slate-450 mt-0.5">
+                            By Dr. {rep.doctor_name} · {new Date(rep.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <div className="flex gap-2 shrink-0">
+                          <button 
+                            onClick={() => setViewingLabReport(rep)}
+                            className="bg-white text-slate-700 border border-[#bec8d2] text-[10px] font-bold px-2.5 py-1.5 rounded-md hover:bg-slate-50 flex items-center gap-1"
+                          >
+                            <Eye className="w-3.5 h-3.5" /> Read
+                          </button>
+                          <button 
+                            onClick={() => downloadLabReportPDF(rep)}
+                            className="bg-[#006591] text-white text-[10px] font-bold px-2.5 py-1.5 rounded-md hover:bg-[#004c6e] flex items-center gap-1"
+                          >
+                            <Download className="w-3.5 h-3.5" /> PDF
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
             </div>
           </div>
         )}
@@ -1076,40 +1460,448 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
               <p className="text-xs text-[#3e4850]">Tick medications after ingestion. System will log states for physician's review.</p>
             </div>
 
-            <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs">
-              {reminders.length === 0 ? (
-                <div className="text-center p-6 text-xs text-slate-400">No diagnostic medication schedules found.</div>
-              ) : (
-                <div className="space-y-3">
-                  {reminders.map(rem => (
-                    <div 
-                      key={rem.id} 
-                      onClick={() => handleToggleReminder(rem.id)}
-                      className={`p-4 border rounded-xl flex items-center justify-between cursor-pointer transition-all ${
-                        rem.taken 
-                          ? "bg-slate-50 border-emerald-200 opacity-80" 
-                          : "bg-white border-[#bec8d2]/40 hover:border-[#006591]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className={`w-5 h-5 rounded border flex items-center justify-center ${
-                          rem.taken ? "bg-emerald-600 border-emerald-600 text-white" : "border-[#bec8d2]"
-                        }`}>
-                          {rem.taken && <CheckCircle className="w-3.5 h-3.5 shrink-0" />}
-                        </div>
-                        <div>
-                          <h4 className="font-bold text-xs text-[#0b1c30]">{rem.medicine_name}</h4>
-                          <p className="text-[10px] text-slate-500">Dosage: {rem.dosage} · Scheduled: {rem.time}</p>
-                        </div>
-                      </div>
-                      <span className={`text-[10px] font-black px-2 py-0.5 rounded ${
-                        rem.taken ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
-                      }`}>
-                        {rem.taken ? "TAKEN ✓" : "TO TAKE"}
-                      </span>
+            {(() => {
+              const todayStr = new Date().toISOString().split("T")[0];
+              const now = new Date();
+              const currentHHMM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+
+              // Calculations for Today
+              const todayReminders = reminders.filter(r => r.dateStr === todayStr);
+              const totalToday = todayReminders.length;
+              const takenToday = todayReminders.filter(r => r.taken).length;
+              const missedToday = todayReminders.filter(r => !r.taken && r.time < currentHHMM).length;
+              const pendingToday = todayReminders.filter(r => !r.taken && r.time >= currentHHMM).length;
+
+              // Upcoming dates (next 3 days)
+              const upcomingDates = Array.from({ length: 3 }).map((_, i) => {
+                const d = new Date();
+                d.setDate(now.getDate() + 1 + i);
+                return d.toISOString().split("T")[0];
+              });
+
+              const upcomingReminders = reminders.filter(r => upcomingDates.includes(r.dateStr));
+
+              return (
+                <div className="space-y-6">
+                  {/* Stats Cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-4 shadow-xs">
+                      <span className="text-[10px] text-slate-400 font-extrabold uppercase">Total Today</span>
+                      <div className="text-2xl font-black text-[#0b1c30] mt-1">{totalToday}</div>
                     </div>
-                  ))}
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 shadow-xs">
+                      <span className="text-[10px] text-emerald-700 font-extrabold uppercase">Taken</span>
+                      <div className="text-2xl font-black text-emerald-800 mt-1">{takenToday}</div>
+                    </div>
+                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 shadow-xs">
+                      <span className="text-[10px] text-rose-700 font-extrabold uppercase">Missed</span>
+                      <div className="text-2xl font-black text-rose-800 mt-1">{missedToday}</div>
+                    </div>
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 shadow-xs">
+                      <span className="text-[10px] text-amber-700 font-extrabold uppercase">Pending</span>
+                      <div className="text-2xl font-black text-amber-800 mt-1">{pendingToday}</div>
+                    </div>
+                  </div>
+
+                  {/* Today's Section */}
+                  <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs space-y-4">
+                    <h3 className="font-extrabold text-sm text-[#0b1c30] border-b pb-2">Today's Scheduled Medications</h3>
+                    {todayReminders.length === 0 ? (
+                      <div className="text-center py-6 text-xs text-slate-400">No medications scheduled for today.</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {todayReminders.map(rem => {
+                          let statusText = "PENDING";
+                          let badgeStyle = "bg-amber-100 text-amber-800 border-amber-200";
+                          if (rem.taken) {
+                            statusText = "TAKEN";
+                            badgeStyle = "bg-emerald-100 text-emerald-800 border-emerald-200";
+                          } else if (rem.time < currentHHMM) {
+                            statusText = "MISSED";
+                            badgeStyle = "bg-rose-100 text-rose-800 border-rose-200";
+                          }
+
+                          return (
+                            <div 
+                              key={rem.id}
+                              className={`p-4 border rounded-xl flex flex-col sm:flex-row justify-between sm:items-center gap-4 transition-all ${
+                                rem.taken 
+                                  ? "bg-slate-50 border-emerald-100 opacity-80" 
+                                  : statusText === "MISSED"
+                                    ? "bg-rose-50/20 border-rose-100"
+                                    : "bg-white border-[#bec8d2]/40"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div 
+                                  onClick={() => handleToggleReminder(rem.id)}
+                                  className={`w-5 h-5 rounded border flex items-center justify-center cursor-pointer ${
+                                    rem.taken ? "bg-emerald-600 border-emerald-600 text-white" : "border-[#bec8d2] bg-white hover:border-[#006591]"
+                                  }`}
+                                >
+                                  {rem.taken && <CheckCircle className="w-3.5 h-3.5 shrink-0" />}
+                                </div>
+                                <div>
+                                  <h4 className="font-bold text-xs text-[#0b1c30]">{rem.medicine_name}</h4>
+                                  <p className="text-[10px] text-slate-500">Dosage: {rem.dosage} · Scheduled: {rem.time}</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3 self-end sm:self-auto">
+                                <span className={`text-[9px] font-black px-2 py-0.5 rounded border uppercase ${badgeStyle}`}>
+                                  {statusText}
+                                </span>
+                                {!rem.taken && statusText === "PENDING" && (
+                                  <button
+                                    onClick={() => handleToggleReminder(rem.id)}
+                                    className="bg-[#006591] hover:bg-[#004c6e] text-white text-[10px] font-bold px-3 py-1 rounded transition-colors"
+                                  >
+                                    Mark as Taken
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Upcoming Section */}
+                  <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs space-y-4">
+                    <h3 className="font-extrabold text-sm text-[#0b1c30] border-b pb-2">Upcoming Schedule (Next 3 Days)</h3>
+                    {upcomingReminders.length === 0 ? (
+                      <div className="text-center py-6 text-xs text-slate-400">No upcoming medications scheduled.</div>
+                    ) : (
+                      <div className="space-y-6">
+                        {upcomingDates.map(date => {
+                          const dateReminders = upcomingReminders.filter(r => r.dateStr === date);
+                          if (dateReminders.length === 0) return null;
+
+                          // Format Date
+                          const formattedDate = new Date(date).toLocaleDateString(undefined, {
+                            weekday: 'long',
+                            month: 'short',
+                            day: 'numeric'
+                          });
+
+                          return (
+                            <div key={date} className="space-y-2">
+                              <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider">{formattedDate}</h4>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {dateReminders.map(rem => (
+                                  <div key={rem.id} className="p-3 border border-slate-100 bg-slate-50/50 rounded-lg flex justify-between items-center">
+                                    <div>
+                                      <h5 className="font-bold text-xs text-[#0b1c30]">{rem.medicine_name}</h5>
+                                      <p className="text-[9px] text-slate-500">Dosage: {rem.dosage} · Scheduled: {rem.time}</p>
+                                    </div>
+                                    <span className="text-[8px] bg-slate-200 text-slate-600 font-extrabold px-1.5 py-0.5 rounded border border-slate-300/30">
+                                      UPCOMING
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* MEDICAL HISTORY TIMELINE TAB */}
+        {activeTab === "history" && (
+          <div className="space-y-6">
+            <div>
+              <h1 className="text-2xl font-black text-[#0b1c30]">Longitudinal Medical History</h1>
+              <p className="text-xs text-[#3e4850]">Chronological log of appointments, prescriptions, and lab test results.</p>
+            </div>
+
+            <div className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs">
+              {(() => {
+                const appointmentEvents = appointments.map(a => ({
+                  id: a.id,
+                  type: "APPOINTMENT",
+                  date: a.date,
+                  title: `Appointment Booked - ${a.doctor_specialization}`,
+                  subtitle: `With Dr. ${a.doctor_name} at ${a.hospital_name}`,
+                  details: `Time Slot: ${a.time} | Token: #${a.token}`,
+                  status: a.status
+                }));
+
+                const prescriptionEvents = prescriptions.map(p => {
+                  const prescItems = prescriptionItems.filter(item => item.prescription_id === p.id);
+                  return {
+                    id: p.id,
+                    type: "PRESCRIPTION",
+                    date: p.created_at.split("T")[0],
+                    title: `Rx Prescription Released`,
+                    subtitle: `Diagnosis: ${p.diagnosis} (by Dr. ${p.doctor_name})`,
+                    details: `Symptoms: ${p.symptoms || "None reported"}\nAdvices: ${p.notes || "None"}\nMedications:\n${prescItems.map(m => `- ${m.medicine_name}: ${m.dosage} for ${m.duration}`).join("\n")}`,
+                    status: undefined as string | undefined
+                  };
+                });
+
+                const labEvents = labReports.map(r => ({
+                  id: r.id,
+                  type: "LAB_REPORT",
+                  date: r.created_at.split("T")[0],
+                  title: `Diagnostic Lab Report: ${r.test_name}`,
+                  subtitle: `Completed by Lab Specialist for Dr. ${r.doctor_name}`,
+                  details: r.results_text,
+                  status: undefined as string | undefined
+                }));
+
+                const timelineEvents = [...appointmentEvents, ...prescriptionEvents, ...labEvents].sort(
+                  (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+                );
+
+                if (timelineEvents.length === 0) {
+                  return <p className="text-xs text-slate-400 text-center py-6">No historical records found for this patient profile.</p>;
+                }
+
+                return (
+                  <div className="relative border-l-2 border-slate-200 ml-4 pl-6 space-y-8">
+                    {timelineEvents.map((event, idx) => {
+                      let badgeColor = "bg-sky-100 text-[#006591]";
+                      let Icon = Calendar;
+                      if (event.type === "PRESCRIPTION") {
+                        badgeColor = "bg-emerald-100 text-emerald-800";
+                        Icon = ClipboardList;
+                      } else if (event.type === "LAB_REPORT") {
+                        badgeColor = "bg-purple-100 text-purple-800";
+                        Icon = FileText;
+                      }
+
+                      return (
+                        <div key={idx} className="relative">
+                          {/* Circle marker */}
+                          <span className="absolute -left-[35px] top-1.5 flex items-center justify-center w-6 h-6 rounded-full bg-white border-2 border-slate-200">
+                            <Icon className="w-3.5 h-3.5 text-slate-550" />
+                          </span>
+                          
+                          {/* Event Card */}
+                          <div className="bg-stone-50 border border-slate-200/55 rounded-lg p-4 text-xs space-y-2">
+                            <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2">
+                              <div>
+                                <span className={`inline-block px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${badgeColor}`}>
+                                  {event.type}
+                                </span>
+                                <h4 className="font-extrabold text-sm text-[#0b1c30] mt-1">{event.title}</h4>
+                                <p className="text-slate-500 font-semibold mt-0.5">{event.subtitle}</p>
+                              </div>
+                              <span className="text-[10px] text-slate-400 font-mono font-bold shrink-0">
+                                {event.date}
+                              </span>
+                            </div>
+                            
+                            <div className="text-[#3e4850] whitespace-pre-wrap leading-relaxed border-t border-slate-100 pt-2 mt-2 font-medium">
+                              {event.details}
+                            </div>
+
+                            {event.status && (
+                              <div className="mt-1.5 flex items-center gap-1.5">
+                                <span className="text-[10px] text-slate-400 font-bold uppercase">Status:</span>
+                                <span className="text-[9px] bg-slate-200 px-1.5 py-0.5 rounded font-black text-slate-700">
+                                  {event.status}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* FAMILY PROFILES TAB */}
+        {activeTab === "family" && (
+          <div className="space-y-6">
+            <div>
+              <h1 className="text-2xl font-black text-[#0b1c30]">Family Profiles Management</h1>
+              <p className="text-xs text-[#3e4850]">Add and manage your family members to book appointments on their behalf.</p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              {/* Add Family Member Form */}
+              <div className="lg:col-span-1 bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs space-y-4 text-left">
+                <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider border-b pb-2">Add Family Member</h3>
+                
+                {famSuccess && (
+                  <div className="bg-emerald-50 border border-emerald-400 text-emerald-800 p-3 rounded text-xs font-bold text-center">
+                    ✓ Family member profile added!
+                  </div>
+                )}
+
+                <form onSubmit={handleAddFamilyMember} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Full Name *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. John Doe Sr."
+                      value={famName}
+                      onChange={(e) => setFamName(e.target.value)}
+                      className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Relationship</label>
+                      <select
+                        value={famRelationship}
+                        onChange={(e) => setFamRelationship(e.target.value)}
+                        className="w-full px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
+                      >
+                        <option value="Father">Father</option>
+                        <option value="Mother">Mother</option>
+                        <option value="Child">Child</option>
+                        <option value="Spouse">Spouse</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Gender</label>
+                      <select
+                        value={famGender}
+                        onChange={(e) => setFamGender(e.target.value)}
+                        className="w-full px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
+                      >
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Date of Birth</label>
+                    <input
+                      type="date"
+                      value={famDob}
+                      onChange={(e) => setFamDob(e.target.value)}
+                      className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-[#006591] hover:bg-[#004c6e] text-white text-xs font-bold py-2.5 rounded shadow-xs"
+                  >
+                    Register Member Profile
+                  </button>
+                </form>
+              </div>
+
+              {/* Family Roster list */}
+              <div className="lg:col-span-2 bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs text-left">
+                <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider border-b pb-2 mb-4">
+                  Registered Family Members ({familyMembers.length})
+                </h3>
+
+                {familyMembers.length === 0 ? (
+                  <div className="text-center p-8 text-xs text-slate-400">No family members registered yet.</div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {familyMembers.map(member => (
+                      <div key={member.id} className="py-4 flex justify-between items-center">
+                        <div>
+                          <h4 className="font-bold text-sm text-[#0b1c30]">{member.full_name}</h4>
+                          <p className="text-xs text-slate-500">
+                            Relationship: <span className="font-bold text-[#0ea5e9]">{member.relationship}</span> · Gender: {member.gender || "N/A"} · DOB: {member.dob || "N/A"}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteFamilyMember(member.id)}
+                          className="text-red-500 hover:text-red-700 text-xs font-bold"
+                        >
+                          Delete Profile
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+        )}
+        {activeTab === "notifications" && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <div>
+                <h1 className="text-2xl font-black text-[#0b1c30]">Platform Notification Center</h1>
+                <p className="text-xs text-[#3e4850]">View recent alerts, appointment notifications, and prescription updates.</p>
+              </div>
+              {hasNotifsCount > 0 && (
+                <button 
+                  onClick={async () => {
+                    const nots = await Database.getNotifications();
+                    nots.forEach(n => { if (n.user_id === user.id) n.is_read = true; });
+                    await Database.saveNotifications(nots);
+                    loadDatabase();
+                  }}
+                  className="bg-[#006591] hover:bg-[#004c6e] text-white text-xs font-bold px-4 py-2 rounded-lg"
+                >
+                  Mark all as read
+                </button>
+              )}
+            </div>
+
+            <div className="bg-white border border-[#bec8d2]/30 rounded-xl overflow-hidden shadow-xs divide-y divide-slate-100">
+              {notifications.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-8">Your notification history is empty.</p>
+              ) : (
+                notifications.map(n => {
+                  let typeColor = "bg-slate-100 text-slate-700";
+                  if (n.type === "APPOINTMENT") typeColor = "bg-sky-100 text-[#006591]";
+                  if (n.type === "PRESCRIPTION") typeColor = "bg-emerald-100 text-emerald-800";
+                  if (n.type === "LAB_REPORT") typeColor = "bg-purple-100 text-purple-800";
+                  if (n.type === "CHAT") typeColor = "bg-amber-100 text-amber-800";
+
+                  return (
+                    <div key={n.id} className={`p-5 flex justify-between items-start gap-4 transition-colors ${!n.is_read ? "bg-[#eff4ff]/20" : ""}`}>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-wider ${typeColor}`}>
+                            {n.type}
+                          </span>
+                          {!n.is_read && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                          )}
+                          <h4 className="font-extrabold text-sm text-[#0b1c30]">{n.title}</h4>
+                        </div>
+                        <p className="text-xs text-[#3e4850] leading-relaxed font-medium">{n.message}</p>
+                        <p className="text-[10px] text-slate-400 font-mono mt-2">
+                          {new Date(n.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      
+                      {!n.is_read && (
+                        <button
+                          onClick={async () => {
+                            const nots = await Database.getNotifications();
+                            const updated = nots.map(item => item.id === n.id ? { ...item, is_read: true } : item);
+                            await Database.saveNotifications(updated);
+                            loadDatabase();
+                          }}
+                          className="text-[10px] text-[#006591] hover:underline font-bold shrink-0"
+                        >
+                          Mark read
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>

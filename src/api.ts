@@ -3,7 +3,7 @@ import {
   User, Profile, Hospital, HospitalAdminExt, DoctorExt, ReceptionistExt, LabTechnicianExt, 
   Appointment, Prescription, PrescriptionItem, LabRequest, LabReport, 
   Notification, Chat, Message, MedicineReminder, UserRole, UserStatus, 
-  AppointmentStatus, LabRequestStatus, DoctorAvailability
+  AppointmentStatus, LabRequestStatus, DoctorAvailability, FamilyMember, StaffActivityLog
 } from "./types";
 
 
@@ -366,4 +366,60 @@ export class Database {
       throw error;
     }
   }
+
+  // Family Profile Methods
+  static async getFamilyMembers(patientId: string): Promise<FamilyMember[]> {
+    const { data, error } = await supabase.from('family_members').select('*').eq('patient_id', patientId);
+    if (error) {
+      console.error("Error fetching family members:", error.message);
+      throw error;
+    }
+    return data || [];
+  }
+
+  static async saveFamilyMembers(data: FamilyMember[]) {
+    const { error } = await supabase.from('family_members').upsert(data);
+    if (error) {
+      console.error("Error saving family members:", error.message);
+      throw error;
+    }
+  }
+
+  static async deleteFamilyMember(id: string) {
+    const { error } = await supabase.from('family_members').delete().eq('id', id);
+    if (error) {
+      console.error("Error deleting family member:", error.message);
+      throw error;
+    }
+  }
+
+  // Staff Activity Logging Methods
+  static async logStaffActivity(actorId: string, actorName: string, actionType: string, details: string, hospitalId?: string): Promise<void> {
+    const { error } = await supabase.from('staff_activity_logs').insert({
+      id: crypto.randomUUID(),
+      actor_id: actorId,
+      actor_name: actorName,
+      action_type: actionType,
+      details: details,
+      hospital_id: hospitalId || null,
+      created_at: new Date().toISOString()
+    });
+    if (error) {
+      console.error("Error logging staff activity:", error.message);
+    }
+  }
+
+  static async getStaffActivityLogs(hospitalId?: string): Promise<any[]> {
+    let query = supabase.from('staff_activity_logs').select('*').order('created_at', { ascending: false });
+    if (hospitalId) {
+      query = query.eq('hospital_id', hospitalId);
+    }
+    const { data, error } = await query;
+    if (error) {
+      console.error("Error fetching staff activity logs:", error.message);
+      throw error;
+    }
+    return data || [];
+  }
 }
+
