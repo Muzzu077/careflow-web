@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { MockDB } from "./mockData";
-import { User, Appointment, Profile, UserRole, UserStatus, AppointmentStatus } from "./types";
-import { supabase } from "./supabaseClient";
+import { Database } from "../../api";
+import { User, Appointment, Profile, UserRole, UserStatus, AppointmentStatus } from "../../types";
+import { supabase } from "../../supabaseClient";
 import { 
   Heart, Calendar, Search, Users, Activity, 
   MapPin, CheckCircle2, UserCheck, SearchCode, Clock, 
@@ -36,11 +36,28 @@ export default function DashboardReceptionist({ user, onLogout }: ReceptionistPr
     loadDatabase();
   }, [user]);
 
+  // Real-time messages listener (Unique channel name per user to prevent collision)
+  useEffect(() => {
+    const channel = supabase
+      .channel(`realtime-messages-receptionist-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        () => {
+          loadDatabase();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
   const loadDatabase = async () => {
-    // Receptionist sees appointments associated with their general hospital (e.g., hosp-1)
-    const allAppts = await MockDB.getAppointments();
-    const allProfs = await MockDB.getProfiles();
-    const allUsers = await MockDB.getUsers();
+    const allAppts = await Database.getAppointments();
+    const allProfs = await Database.getProfiles();
+    const allUsers = await Database.getUsers();
     
     setAppointments(allAppts);
     setProfiles(allProfs);
@@ -49,19 +66,71 @@ export default function DashboardReceptionist({ user, onLogout }: ReceptionistPr
 
   // Turn patient status to CHECKED_IN
   const handleMarkCheckedIn = async (appointmentId: string) => {
-    const allAppts = await MockDB.getAppointments();
-    const updated = allAppts.map(a => {
-      if (a.id === appointmentId) {
-        // Send notification to patient
-        MockDB.addNotification(a.patient_id, "Checked In", "Reception checked you in. Please proceed to the Doctor's waiting lobby.");
-        return { ...a, status: AppointmentStatus.CHECKED_IN };
-      }
-      return a;
-    });
+    try {
+      const allAppts = await Database.getAppointments();
+      const matched = allAppts.find(a => a.id === appointmentId);
+      if (!matched) return;
 
-    await MockDB.saveAppointments(updated);
-    loadDatabase();
-    alert("Patient marked as CHECKED_IN. Pushed to Attending Doctor.");
+      const updated = allAppts.map(a => {
+        if (a.id === appointmentId) {
+          return { ...a, status: AppointmentStatus.CHECKED_IN };
+        }
+        return a;
+      });
+
+      await Database.saveAppointments(updated);
+
+      // Log status transition to audit trail
+      await Database.logAppointmentStatusChange(appointmentId, matched.status, AppointmentStatus.CHECKED_IN, user.id);
+
+      // Send notification to patient with type APPOINTMENT
+      await Database.addNotification(
+        matched.patient_id, 
+        "Checked In", 
+        "Reception checked you in. Please proceed to the Doctor's waiting lobby.",
+        "APPOINTMENT"
+      );
+
+      loadDatabase();
+      alert("Patient marked as CHECKED_IN. Pushed to Attending Doctor.");
+    } catch (err: any) {
+      alert("Error checking in patient: " + err.message);
+    }
+  };
+
+  // Cancel / No Show appointment action
+  const handleCancelAppointment = async (appointmentId: string) => {
+    if (!confirm("Are you sure you want to cancel this appointment?")) return;
+    try {
+      const allAppts = await Database.getAppointments();
+      const matched = allAppts.find(a => a.id === appointmentId);
+      if (!matched) return;
+
+      const updated = allAppts.map(a => {
+        if (a.id === appointmentId) {
+          return { ...a, status: AppointmentStatus.CANCELLED };
+        }
+        return a;
+      });
+
+      await Database.saveAppointments(updated);
+
+      // Log status transition to audit trail
+      await Database.logAppointmentStatusChange(appointmentId, matched.status, AppointmentStatus.CANCELLED, user.id);
+
+      // Send notification to patient with type APPOINTMENT
+      await Database.addNotification(
+        matched.patient_id, 
+        "Appointment Cancelled", 
+        "Your appointment has been cancelled by the reception desk.",
+        "APPOINTMENT"
+      );
+
+      loadDatabase();
+      alert("Appointment has been marked as CANCELLED.");
+    } catch (err: any) {
+      alert("Error cancelling appointment: " + err.message);
+    }
   };
 
   const handleQuickRegisterPatient = async (e: React.FormEvent) => {
@@ -74,7 +143,7 @@ export default function DashboardReceptionist({ user, onLogout }: ReceptionistPr
     try {
       const { data, error } = await supabase.auth.signUp({
         email: patEmail.trim(),
-        password: "password123", // default password
+        password: patPhone || "SecurePass" + Math.floor(Math.random()*10000), // default to phone or generated pass
         options: {
           data: {
             role: "PATIENT",
@@ -230,17 +299,27 @@ export default function DashboardReceptionist({ user, onLogout }: ReceptionistPr
                         <p className="text-[10px] text-slate-400 mt-1">Time Slot: {apt.time} · Facility: {apt.hospital_name}</p>
                       </div>
 
-                      <div>
-                        {apt.status === "BOOKED" ? (
-                          <button
-                            onClick={() => handleMarkCheckedIn(apt.id)}
-                            className="bg-[#006591] hover:bg-[#004c6e] text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-1.5 shadow-sm"
-                          >
-                            <UserCheck className="w-4 h-4" /> Check-In Patient
-                          </button>
+                      <div className="flex items-center gap-2">
+                        {apt.status === AppointmentStatus.BOOKED ? (
+                          <>
+                            <button
+                              onClick={() => handleCancelAppointment(apt.id)}
+                              className="px-3 py-1.5 border border-rose-200 text-rose-650 rounded-lg text-xs font-bold hover:bg-rose-50 flex items-center gap-1.5"
+                            >
+                              No Show / Cancel
+                            </button>
+                            <button
+                              onClick={() => handleMarkCheckedIn(apt.id)}
+                              className="bg-[#006591] hover:bg-[#004c6e] text-white text-xs font-bold px-4 py-1.5 rounded-lg flex items-center gap-1.5 shadow-sm transition-colors"
+                            >
+                              <UserCheck className="w-4 h-4" /> Check-In Patient
+                            </button>
+                          </>
                         ) : (
                           <span className={`text-xs font-bold px-3 py-1 rounded-full ${
-                            apt.status === "COMPLETED" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+                            apt.status === AppointmentStatus.COMPLETED ? "bg-emerald-100 text-emerald-800" :
+                            apt.status === AppointmentStatus.CANCELLED ? "bg-rose-100 text-rose-800" :
+                            "bg-amber-100 text-amber-850"
                           }`}>
                             {apt.status}
                           </span>

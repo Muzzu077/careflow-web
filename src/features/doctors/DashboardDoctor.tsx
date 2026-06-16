@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { MockDB } from "./mockData";
-import { User, Appointment, Prescription, PrescriptionItem, LabRequest, Notification, Chat, Message, UserRole, AppointmentStatus, LabRequestStatus, Profile, DoctorExt } from "./types";
+import { Database } from "../../api";
+import { User, Appointment, Prescription, PrescriptionItem, LabRequest, Notification, Chat, Message, UserRole, AppointmentStatus, LabRequestStatus, Profile, DoctorExt } from "../../types";
+import { supabase } from "../../supabaseClient";
 import { 
   Heart, Calendar, FileText, ClipboardList, Send, MapPin, 
   User as UserIcon, LogOut, CheckCircle2, Clock, AlertCircle, 
@@ -24,11 +25,13 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [doctorRecord, setDoctorRecord] = useState<DoctorExt | null>(null);
 
-  // Availability Settings States
-  const [availableDays, setAvailableDays] = useState<string[]>([]);
-  const [availableTimings, setAvailableTimings] = useState("09:00-13:00,14:00-18:00");
-  const [tokenLimit, setTokenLimit] = useState(50);
-  const [tokenType, setTokenType] = useState("PER_DAY");
+  // New Doctor Availability Slots State
+  const [availabilitySlots, setAvailabilitySlots] = useState<any[]>([]);
+  const [compDay, setCompDay] = useState("Monday");
+  const [compStart, setCompStart] = useState("09:00");
+  const [compEnd, setCompEnd] = useState("13:00");
+  const [compTokenType, setCompTokenType] = useState("PER_DAY");
+  const [compMaxTokens, setCompMaxTokens] = useState(20);
   const [availabilitySuccess, setAvailabilitySuccess] = useState(false);
 
   // Consultation Form States
@@ -61,33 +64,50 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     loadDatabase();
   }, [user]);
 
+  // Real-time messages listener (Unique channel name per user to prevent collision)
+  useEffect(() => {
+    const channel = supabase
+      .channel(`realtime-messages-doctor-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        () => {
+          loadDatabase();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
   const loadDatabase = async () => {
-    const allAppts = (await MockDB.getAppointments()).filter(a => a.doctor_id === user.id);
-    const allPrescs = (await MockDB.getPrescriptions()).filter(p => p.doctor_id === user.id);
-    const allChats = (await MockDB.getChats()).filter(c => c.participant1_id === user.id || c.participant2_id === user.id);
-    const allMsgs = await MockDB.getMessages();
-    const allProfs = await MockDB.getProfiles();
-    const foundProfile = allProfs.find(p => p.id === user.id) || { full_name: "Dr. Emily Chen" };
-    const doctors = await MockDB.getDoctors();
-    const currentDoc = doctors.find(d => d.id === user.id) || null;
+    try {
+      const allAppts = (await Database.getAppointments()).filter(a => a.doctor_id === user.id);
+      const allPrescs = (await Database.getPrescriptions()).filter(p => p.doctor_id === user.id);
+      const allChats = (await Database.getChats()).filter(c => c.participant1_id === user.id || c.participant2_id === user.id);
+      const allMsgs = await Database.getMessages();
+      const allProfs = await Database.getProfiles();
+      const foundProfile = allProfs.find(p => p.id === user.id);
+      const doctors = await Database.getDoctors();
+      const currentDoc = doctors.find(d => d.id === user.id) || null;
+      const slots = await Database.getDoctorAvailability(user.id);
 
-    setAppointments(allAppts);
-    setPrescriptions(allPrescs);
-    setChats(allChats);
-    setMessages(allMsgs);
-    setProfiles(allProfs);
-    setDocProfile(foundProfile);
-    setDoctorRecord(currentDoc);
+      setAppointments(allAppts);
+      setPrescriptions(allPrescs);
+      setChats(allChats);
+      setMessages(allMsgs);
+      setProfiles(allProfs);
+      setDocProfile(foundProfile);
+      setDoctorRecord(currentDoc);
+      setAvailabilitySlots(slots);
 
-    if (currentDoc) {
-      setAvailableDays(currentDoc.available_days ? currentDoc.available_days.split(',') : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-      setAvailableTimings(currentDoc.available_timings || '09:00-13:00,14:00-18:00');
-      setTokenLimit(currentDoc.token_limit || 50);
-      setTokenType(currentDoc.token_type || 'PER_DAY');
-    }
-
-    if (allChats.length > 0 && !activeChatId) {
-      setActiveChatId(allChats[0].id);
+      if (allChats.length > 0 && !activeChatId) {
+        setActiveChatId(allChats[0].id);
+      }
+    } catch (e) {
+      console.error("Error loading doctor database:", e);
     }
   };
 
@@ -110,6 +130,23 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     setPrescriptionMeds(prev => prev.filter((_, i) => i !== idx));
   };
 
+  const handleStartConsultation = async (apt: Appointment) => {
+    try {
+      const allAppts = await Database.getAppointments();
+      const updated = allAppts.map(a => a.id === apt.id ? { ...a, status: AppointmentStatus.IN_CONSULTATION } : a);
+      await Database.saveAppointments(updated);
+      await Database.logAppointmentStatusChange(apt.id, AppointmentStatus.CHECKED_IN, AppointmentStatus.IN_CONSULTATION, user.id);
+      setActiveConsultation({ ...apt, status: AppointmentStatus.IN_CONSULTATION });
+      setSymptoms("");
+      setDiagnosis("");
+      setNotes("");
+      setPrescriptionMeds([]);
+      loadDatabase();
+    } catch (err: any) {
+      alert("Error starting consultation: " + err.message);
+    }
+  };
+
   // COMPLETE CONSULTATION -> SUBMIT TO LOCALSTORAGE
   const handleSubmitConsultation = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -120,18 +157,20 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       return;
     }
 
-    const prescriptionId = "prsc-" + Math.random().toString(36).substring(2, 9);
+    const prescriptionId = crypto.randomUUID();
     
+    const patProfile = profiles.find(p => p.id === activeConsultation.patient_id);
+
     // 1. Create Core Prescription
     const newPrescription: Prescription = {
       id: prescriptionId,
       appointment_id: activeConsultation.id,
       doctor_id: user.id,
-      doctor_name: docProfile?.full_name || "Dr. Emily Chen",
+      doctor_name: docProfile?.full_name || "Doctor",
       patient_id: activeConsultation.patient_id,
       patient_name: activeConsultation.patient_name,
-      patient_dob: "1994-05-12", // placeholder DOB
-      patient_gender: "Female",
+      patient_dob: patProfile?.dob || "",
+      patient_gender: patProfile?.gender || "",
       hospital_id: activeConsultation.hospital_id,
       hospital_name: activeConsultation.hospital_name,
       symptoms,
@@ -140,16 +179,16 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       created_at: new Date().toISOString()
     };
 
-    const currentPrescs = await MockDB.getPrescriptions();
+    const currentPrescs = await Database.getPrescriptions();
     currentPrescs.unshift(newPrescription);
-    await MockDB.savePrescriptions(currentPrescs);
+    await Database.savePrescriptions(currentPrescs);
 
     // 2. Inject prescription drugs list mapping
-    const currentItems = await MockDB.getPrescriptionItems();
-    const newRemindersList = await MockDB.getReminders();
+    const currentItems = await Database.getPrescriptionItems();
+    const newRemindersList = await Database.getReminders();
 
     prescriptionMeds.forEach(med => {
-      const itemUuid = "prscitem-" + Math.random().toString(36).substring(2, 9);
+      const itemUuid = crypto.randomUUID();
       currentItems.push({
         id: itemUuid,
         prescription_id: prescriptionId,
@@ -163,7 +202,7 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       const timeSlots = med.reminderTime.split(",").map(t => t.trim());
       timeSlots.forEach(time => {
         newRemindersList.push({
-          id: "rem-" + Math.random().toString(36).substring(2, 9),
+          id: crypto.randomUUID(),
           patient_id: activeConsultation.patient_id,
           prescription_id: prescriptionId,
           medicine_name: med.medicineName,
@@ -175,24 +214,28 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       });
     });
 
-    await MockDB.savePrescriptionItems(currentItems);
-    await MockDB.saveReminders(newRemindersList);
+    await Database.savePrescriptionItems(currentItems);
+    await Database.saveReminders(newRemindersList);
 
     // 3. Mark appointment complete in db
-    const currentAppointments = await MockDB.getAppointments();
+    const currentAppointments = await Database.getAppointments();
     const updatedApts = currentAppointments.map(a => {
       if (a.id === activeConsultation.id) {
         return { ...a, status: AppointmentStatus.COMPLETED };
       }
       return a;
     });
-    await MockDB.saveAppointments(updatedApts);
+    await Database.saveAppointments(updatedApts);
+
+    // Log status change to audit logs
+    await Database.logAppointmentStatusChange(activeConsultation.id, AppointmentStatus.IN_CONSULTATION, AppointmentStatus.COMPLETED, user.id);
 
     // 4. Send security notification
-    await MockDB.addNotification(
+    await Database.addNotification(
       activeConsultation.patient_id, 
       "Prescription Ready", 
-      `Dr. ${docProfile?.full_name} completed consultation. View medications directions on dashboard.`
+      `Dr. ${docProfile?.full_name} completed consultation. View medications directions on dashboard.`,
+      "PRESCRIPTION"
     );
 
     alert("Consultation complete. Diagnostic Rx record published.");
@@ -214,21 +257,21 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       return;
     }
 
-    const currentReqs = await MockDB.getLabRequests();
+    const currentReqs = await Database.getLabRequests();
     currentReqs.unshift({
-      id: "labreq-" + Math.random().toString(36).substring(2, 9),
+      id: crypto.randomUUID(),
       doctor_id: user.id,
-      doctor_name: docProfile?.full_name || "Dr. Emily Chen",
+      doctor_name: docProfile?.full_name || "Doctor",
       patient_id: labPatientId,
       patient_name: labPatientName,
       appointment_id: labAppointmentId || "apt-direct",
-      hospital_id: "hosp-1", // associated SeattleGeneral
+      hospital_id: doctorRecord?.hospital_id || "hosp-1", // associated doctor's clinic/hospital
       test_name: labTestName,
       status: LabRequestStatus.PENDING,
       created_at: new Date().toISOString()
     });
 
-    await MockDB.saveLabRequests(currentReqs);
+    await Database.saveLabRequests(currentReqs);
     setLabSuccess(true);
     setTimeout(() => {
       setLabSuccess(false);
@@ -240,9 +283,9 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
     e.preventDefault();
     if (!chatInput.trim() || !activeChatId) return;
 
-    const allMsgs = await MockDB.getMessages();
+    const allMsgs = await Database.getMessages();
     allMsgs.push({
-      id: "msg-" + Math.random().toString(36).substring(2, 9),
+      id: crypto.randomUUID(),
       chat_id: activeChatId,
       sender_id: user.id,
       text: chatInput,
@@ -250,34 +293,42 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
       created_at: new Date().toISOString()
     });
 
-    await MockDB.saveMessages(allMsgs);
+    await Database.saveMessages(allMsgs);
     setChatInput("");
     loadDatabase();
   };
 
-  const handleSaveAvailability = async (e: React.FormEvent) => {
+  const handleAddAvailabilitySlot = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!doctorRecord) return;
+    try {
+      const newSlot = {
+        id: crypto.randomUUID(),
+        doctor_id: user.id,
+        day_of_week: compDay,
+        start_time: compStart.includes(':') && compStart.split(':').length === 2 ? `${compStart}:00` : compStart,
+        end_time: compEnd.includes(':') && compEnd.split(':').length === 2 ? `${compEnd}:00` : compEnd,
+        token_type: compTokenType,
+        max_tokens: compMaxTokens,
+        created_at: new Date().toISOString()
+      };
 
-    const updatedDoctor: DoctorExt = {
-      ...doctorRecord,
-      available_days: availableDays.join(','),
-      available_timings: availableTimings,
-      token_limit: tokenLimit,
-      token_type: tokenType
-    };
-
-    const allDoctors = await MockDB.getDoctors();
-    const index = allDoctors.findIndex(d => d.id === user.id);
-    if (index !== -1) {
-      allDoctors[index] = updatedDoctor;
-    } else {
-      allDoctors.push(updatedDoctor);
+      await Database.saveDoctorAvailability([newSlot]);
+      setAvailabilitySuccess(true);
+      loadDatabase();
+      setTimeout(() => setAvailabilitySuccess(false), 2000);
+    } catch (err: any) {
+      alert("Error adding availability slot: " + err.message);
     }
-    await MockDB.saveDoctors(allDoctors);
-    setDoctorRecord(updatedDoctor);
-    setAvailabilitySuccess(true);
-    setTimeout(() => setAvailabilitySuccess(false), 2000);
+  };
+
+  const handleDeleteAvailabilitySlot = async (slotId: string) => {
+    if (!confirm("Are you sure you want to remove this availability slot?")) return;
+    try {
+      await Database.deleteDoctorAvailability(slotId);
+      loadDatabase();
+    } catch (err: any) {
+      alert("Error deleting slot: " + err.message);
+    }
   };
 
   const checkedInCount = appointments.filter(a => a.status === AppointmentStatus.CHECKED_IN).length;
@@ -294,7 +345,7 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
               Dr
             </div>
             <div>
-              <h3 className="font-extrabold text-xs text-[#0b1c30]">{docProfile?.full_name || "Dr. Emily Chen"}</h3>
+              <h3 className="font-extrabold text-xs text-[#0b1c30]">{docProfile?.full_name || "Doctor"}</h3>
               <p className="text-[9px] text-[#0ea5e9] uppercase tracking-wide font-black">Attending Clinician</p>
             </div>
           </div>
@@ -419,13 +470,7 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
 
                         {apt.status === AppointmentStatus.CHECKED_IN && (
                           <button
-                            onClick={() => {
-                              setActiveConsultation(apt);
-                              setSymptoms("");
-                              setDiagnosis("");
-                              setNotes("");
-                              setPrescriptionMeds([]);
-                            }}
+                            onClick={() => handleStartConsultation(apt)}
                             className="bg-emerald-600 text-white font-bold text-xs px-4 py-1.5 rounded-lg hover:bg-emerald-700 hover:scale-102 flex items-center gap-1 shadow-xs"
                           >
                             Open Consultation <ChevronRight className="w-3.5 h-3.5" />
@@ -785,89 +830,139 @@ export default function DashboardDoctor({ user, onLogout }: DoctorProps) {
         {activeTab === "availability" && (
           <div className="space-y-6">
             <div>
-              <h1 className="text-2xl font-black text-[#0b1c30]">Consultation Availability & Token Configuration</h1>
+              <h1 className="text-2xl font-black text-[#0b1c30]">Consultation Availability Slots & Token Configuration</h1>
               <p className="text-xs text-[#3e4850]">Define weekly visiting days, slot timings, and hourly/daily patient token limits.</p>
             </div>
 
-            <form onSubmit={handleSaveAvailability} className="bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs max-w-2xl space-y-6">
-              {availabilitySuccess && (
-                <div className="bg-[#6cf8bb]/20 border-l-4 border-emerald-500 p-3 rounded flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <p className="text-xs font-bold text-emerald-800">Availability configurations successfully saved and synchronized.</p>
-                </div>
-              )}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              {/* Form composer to add new slots */}
+              <div className="lg:col-span-1 bg-white border border-[#bec8d2]/30 rounded-xl p-6 shadow-xs space-y-4">
+                <h3 className="font-extrabold text-xs uppercase text-[#0b1c30] tracking-wider border-b pb-2">Create Availability Slot</h3>
+                
+                {availabilitySuccess && (
+                  <div className="bg-[#6cf8bb]/20 border border-emerald-400 text-emerald-800 p-3 rounded text-xs font-bold text-center">
+                    ✓ Availability slot added successfully!
+                  </div>
+                )}
 
-              {/* Day selection checkboxes */}
-              <div className="space-y-2">
-                <label className="block text-xs font-extrabold text-[#3e4850] uppercase">Available Weekly Days</label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(day => (
-                    <label key={day} className="flex items-center gap-2 text-xs font-bold text-slate-700 bg-slate-50 p-2 border border-slate-200/50 rounded cursor-pointer hover:bg-slate-100/55 transition-colors">
-                      <input
-                        type="checkbox"
-                        checked={availableDays.includes(day)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setAvailableDays(prev => [...prev, day]);
-                          } else {
-                            setAvailableDays(prev => prev.filter(d => d !== day));
-                          }
-                        }}
-                        className="rounded text-[#006591] focus:ring-[#006591]"
-                      />
-                      {day}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {/* Available timings */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="block text-xs font-extrabold text-[#3e4850] uppercase">Consulting Hours</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. 09:00-13:00,14:00-18:00"
-                    value={availableTimings}
-                    onChange={(e) => setAvailableTimings(e.target.value)}
-                    className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
-                  />
-                  <span className="text-[10px] text-slate-400 block">Comma separated start-end hours (24-hour format).</span>
-                </div>
-
-                {/* Token Configuration */}
-                <div className="space-y-1">
-                  <label className="block text-xs font-extrabold text-[#3e4850] uppercase">Token Limit Mode</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="number"
-                      required
-                      min={1}
-                      value={tokenLimit}
-                      onChange={(e) => setTokenLimit(parseInt(e.target.value) || 0)}
-                      className="w-24 px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none focus:border-[#006591]"
-                    />
+                <form onSubmit={handleAddAvailabilitySlot} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Select Day of Week</label>
                     <select
-                      value={tokenType}
-                      onChange={(e) => setTokenType(e.target.value)}
-                      className="flex-1 px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none focus:border-[#006591]"
+                      value={compDay}
+                      onChange={(e) => setCompDay(e.target.value)}
+                      className="w-full px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
                     >
-                      <option value="PER_HOUR">Patients Per Hour</option>
-                      <option value="PER_DAY">Tokens Per Day</option>
+                      {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(d => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
                     </select>
                   </div>
-                  <span className="text-[10px] text-slate-400 block">Limit booking slots automatically based on rate parameters.</span>
-                </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Start Time</label>
+                      <input
+                        type="time"
+                        required
+                        value={compStart}
+                        onChange={(e) => setCompStart(e.target.value)}
+                        className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">End Time</label>
+                      <input
+                        type="time"
+                        required
+                        value={compEnd}
+                        onChange={(e) => setCompEnd(e.target.value)}
+                        className="w-full px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Token Limit Mode</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        required
+                        min={1}
+                        value={compMaxTokens}
+                        onChange={(e) => setCompMaxTokens(parseInt(e.target.value) || 0)}
+                        className="w-20 px-3 py-2 border border-[#bec8d2] rounded text-xs focus:outline-none"
+                      />
+                      <select
+                        value={compTokenType}
+                        onChange={(e) => setCompTokenType(e.target.value)}
+                        className="flex-1 px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
+                      >
+                        <option value="PER_HOUR">Patients Per Hour</option>
+                        <option value="PER_DAY">Tokens Per Day</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full bg-[#006591] hover:bg-[#004c6e] text-white text-xs font-bold py-2.5 rounded transition-colors"
+                  >
+                    Add Availability Slot
+                  </button>
+                </form>
               </div>
 
-              <button
-                type="submit"
-                className="w-full bg-[#006591] hover:bg-[#004c6e] text-white font-bold py-2.5 rounded text-xs transition-colors shadow-sm"
-              >
-                Save Availability Configuration
-              </button>
-            </form>
+              {/* List of current active slots */}
+              <div className="lg:col-span-2 bg-white border border-[#bec8d2]/30 rounded-xl overflow-hidden shadow-xs">
+                <div className="px-5 py-3 bg-stone-50 border-b border-slate-100 text-xs font-extrabold text-[#0b1c30] flex justify-between items-center">
+                  <span>ACTIVE AVAILABILITY SLOTS</span>
+                  <span className="bg-emerald-100 text-emerald-800 font-extrabold px-2 py-0.5 rounded text-[10px]">
+                    {availabilitySlots.length} Slots Active
+                  </span>
+                </div>
+
+                {availabilitySlots.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 text-xs">No availability slots configured yet. Setup using the composer panel.</div>
+                ) : (
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-stone-50/50 border-b border-slate-100 text-slate-550 font-bold">
+                        <th className="p-3">DAY OF WEEK</th>
+                        <th className="p-3">HOURS</th>
+                        <th className="p-3">TOKEN MODE & LIMIT</th>
+                        <th className="p-3">COMMAND</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {availabilitySlots.map(slot => (
+                        <tr key={slot.id} className="hover:bg-slate-50/55 transition-colors">
+                          <td className="p-3 font-bold text-slate-800">{slot.day_of_week}</td>
+                          <td className="p-3 font-mono text-slate-600">
+                            {slot.start_time.substring(0, 5)} - {slot.end_time.substring(0, 5)}
+                          </td>
+                          <td className="p-3">
+                            <span className="bg-sky-100 text-[#006591] font-bold px-2 py-0.5 rounded text-[10px]">
+                              {slot.max_tokens} {slot.token_type === "PER_HOUR" ? "per Hour" : "per Day"}
+                            </span>
+                          </td>
+                          <td className="p-3">
+                            <button
+                              onClick={() => handleDeleteAvailabilitySlot(slot.id)}
+                              className="text-red-500 hover:text-red-700 hover:underline font-bold"
+                            >
+                              Remove Slot
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+            </div>
           </div>
         )}
 

@@ -64,8 +64,8 @@ export const getResponseFromAI = async (userInput: string): Promise<string> => {
   }
 
   // Hospital match
-  if (query.includes("hospital") || query.includes("clinic") || query.includes("seattle") || query.includes("location")) {
-    return "🏢 CareFlow has multiple fully certified medical facilities in Seattle (Downtown and Emerald District), including 'CareFlow General Hospital', 'Northside Cardiology Clinic', and 'Westlake Outpatient Complex'. All are fully staffed with specialists.";
+  if (query.includes("hospital") || query.includes("clinic") || query.includes("chennai") || query.includes("location")) {
+    return "🏢 CareFlow has multiple fully certified medical facilities in Chennai (including Tambaram, Thandalam, and Porur). All are fully staffed with specialists.";
   }
 
   // General helpful guide

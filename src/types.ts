@@ -10,12 +10,14 @@ export enum UserRole {
 export enum UserStatus {
   ACTIVE = "ACTIVE",
   PENDING = "PENDING",
-  SUSPENDED = "SUSPENDED"
+  SUSPENDED = "SUSPENDED",
+  REJECTED = "REJECTED"
 }
 
 export enum AppointmentStatus {
   BOOKED = "BOOKED",
   CHECKED_IN = "CHECKED_IN",
+  IN_CONSULTATION = "IN_CONSULTATION",
   COMPLETED = "COMPLETED",
   CANCELLED = "CANCELLED"
 }
@@ -45,13 +47,17 @@ export interface Profile {
 
 export interface Hospital {
   id: string;
-  name: string;
+  hospital_name: string;
+  email?: string;
+  phone?: string;
+  status: string; // ACTIVE | SUSPENDED
   address: string;
   city: string;
   area: string;
   state: string;
   pincode: string;
   approved: boolean;
+  admin_user_id?: string;
   created_at: string;
 }
 
@@ -73,6 +79,17 @@ export interface DoctorExt {
   available_timings?: string;
   token_limit?: number;
   token_type?: string;
+}
+
+export interface DoctorAvailability {
+  id: string;
+  doctor_id: string;
+  day_of_week: string;
+  start_time: string;
+  end_time: string;
+  token_type: string; // "PER_HOUR" | "PER_DAY"
+  max_tokens: number;
+  created_at: string;
 }
 
 export interface ReceptionistExt {
@@ -102,6 +119,15 @@ export interface Appointment {
   token: number;
   status: AppointmentStatus;
   created_at: string;
+}
+
+export interface AppointmentLog {
+  id: string;
+  appointment_id: string;
+  old_status: AppointmentStatus | null;
+  new_status: AppointmentStatus;
+  updated_by: string | null;
+  updated_at: string;
 }
 
 export interface Prescription {
@@ -161,7 +187,8 @@ export interface Notification {
   user_id: string;
   title: string;
   message: string;
-  read: boolean;
+  type: 'APPOINTMENT' | 'PRESCRIPTION' | 'LAB_REPORT' | 'CHAT' | 'SYSTEM';
+  is_read: boolean;
   created_at: string;
 }
 

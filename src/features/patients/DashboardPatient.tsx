@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { MockDB } from "./mockData";
-import { User, Appointment, Prescription, PrescriptionItem, LabRequest, LabReport, Notification, Chat, Message, MedicineReminder, AppointmentStatus, LabRequestStatus, UserRole, Hospital, DoctorExt, Profile } from "./types";
+import { Database } from "../../api";
+import { User, Appointment, Prescription, PrescriptionItem, LabRequest, LabReport, Notification, Chat, Message, MedicineReminder, AppointmentStatus, LabRequestStatus, UserRole, UserStatus, Hospital, DoctorExt, Profile, DoctorAvailability } from "../../types";
+import { supabase } from "../../supabaseClient";
 import { 
   Heart, Calendar, FileText, ClipboardList, Bell, MessageSquare, 
   History, User as UserIcon, LogOut, CheckCircle, Clock, MapPin, 
@@ -26,15 +27,17 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [reminders, setReminders] = useState<MedicineReminder[]>([]);
   const [profile, setProfile] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
   
   // State cache for select selectors
   const [hospitalsList, setHospitalsList] = useState<Hospital[]>([]);
   const [doctorsList, setDoctorList] = useState<DoctorExt[]>([]);
   const [profilesList, setProfilesList] = useState<Profile[]>([]);
+  const [availabilityList, setAvailabilityList] = useState<DoctorAvailability[]>([]);
 
   // Dynamic Multi-step Booking State
-  const [selectedCity, setSelectedCity] = useState("Seattle");
-  const [selectedArea, setSelectedArea] = useState("Downtown");
+  const [selectedCity, setSelectedCity] = useState("");
+  const [selectedArea, setSelectedArea] = useState("");
   const [selectedHospitalId, setSelectedHospitalId] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("General Physician");
   const [selectedDoctorId, setSelectedDoctorId] = useState("");
@@ -55,51 +58,110 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     loadDatabase();
   }, [user]);
 
+  // Real-time messages listener (Unique channel name per user to prevent collision)
+  useEffect(() => {
+    const channel = supabase
+      .channel(`realtime-messages-patient-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        () => {
+          loadDatabase();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
   const loadDatabase = async () => {
-    const appts = (await MockDB.getAppointments()).filter(a => a.patient_id === user.id);
-    const prescs = (await MockDB.getPrescriptions()).filter(p => p.patient_id === user.id);
-    const items = await MockDB.getPrescriptionItems();
-    const lReqs = (await MockDB.getLabRequests()).filter(l => l.patient_id === user.id);
-    const lReps = (await MockDB.getLabReports()).filter(r => r.patient_id === user.id);
-    const notifs = (await MockDB.getNotifications()).filter(n => n.user_id === user.id);
-    const userChats = (await MockDB.getChats()).filter(c => c.participant1_id === user.id || c.participant2_id === user.id);
-    const msgs = await MockDB.getMessages();
-    const rems = (await MockDB.getReminders()).filter(r => r.patient_id === user.id);
-    const profiles = await MockDB.getProfiles();
-    const foundProfile = profiles.find(p => p.id === user.id) || { full_name: "Sarah Jenkins" };
-    const hospitals = await MockDB.getHospitals();
-    const doctors = await MockDB.getDoctors();
+    setIsLoading(true);
+    try {
+      const appts = (await Database.getAppointments()).filter(a => a.patient_id === user.id);
+      const prescs = (await Database.getPrescriptions()).filter(p => p.patient_id === user.id);
+      const items = await Database.getPrescriptionItems();
+      const lReqs = (await Database.getLabRequests()).filter(l => l.patient_id === user.id);
+      const lReps = (await Database.getLabReports()).filter(r => r.patient_id === user.id);
+      const notifs = (await Database.getNotifications()).filter(n => n.user_id === user.id);
+      const userChats = (await Database.getChats()).filter(c => c.participant1_id === user.id || c.participant2_id === user.id);
+      const msgs = await Database.getMessages();
+      const rems = (await Database.getReminders()).filter(r => r.patient_id === user.id);
+      const profiles = await Database.getProfiles();
+      const foundProfile = profiles.find(p => p.id === user.id);
+      const hospitals = await Database.getHospitals();
+      const doctors = await Database.getDoctors();
+      const allUsers = await Database.getUsers();
 
-    setAppointments(appts);
-    setPrescriptions(prescs);
-    setPrescriptionItems(items);
-    setLabRequests(lReqs);
-    setLabReports(lReps);
-    setNotifications(notifs);
-    setChats(userChats);
-    setMessages(msgs);
-    setReminders(rems);
-    setProfile(foundProfile);
-    setHospitalsList(hospitals);
-    setDoctorList(doctors);
-    setProfilesList(profiles);
+      // Only show active doctors
+      const activeDoctors = doctors.filter(d => {
+        const u = allUsers.find(usr => usr.id === d.id);
+        return u ? u.status === UserStatus.ACTIVE : false;
+      });
 
-    // Default first chat
-    if (userChats.length > 0 && !activeChatId) {
-      setActiveChatId(userChats[0].id);
+      // Fetch availability slots directly from the doctor_availability table
+      const { data: avails, error: availErr } = await supabase.from('doctor_availability').select('*');
+      if (availErr) throw availErr;
+
+      setAppointments(appts);
+      setPrescriptions(prescs);
+      setPrescriptionItems(items);
+      setLabRequests(lReqs);
+      setLabReports(lReps);
+      setNotifications(notifs);
+      setChats(userChats);
+      setMessages(msgs);
+      setReminders(rems);
+      setProfile(foundProfile);
+      setHospitalsList(hospitals);
+      setDoctorList(activeDoctors);
+      setProfilesList(profiles);
+      setAvailabilityList(avails || []);
+
+      // Default first chat
+      if (userChats.length > 0 && !activeChatId) {
+        setActiveChatId(userChats[0].id);
+      }
+    } catch (e) {
+      console.error("Error loading patient database:", e);
+    } finally {
+      setIsLoading(false);
     }
   };
 
+  useEffect(() => {
+    const activeHosp = hospitalsList.filter(h => h.status === "ACTIVE");
+    if (activeHosp.length > 0) {
+      const cities = Array.from(new Set(activeHosp.map(h => h.city)));
+      if (cities.length > 0 && (!selectedCity || !cities.includes(selectedCity))) {
+        setSelectedCity(cities[0]);
+      }
+    }
+  }, [hospitalsList]);
+
+  useEffect(() => {
+    const activeHosp = hospitalsList.filter(h => h.status === "ACTIVE" && h.city === selectedCity);
+    if (activeHosp.length > 0) {
+      const areas = Array.from(new Set(activeHosp.map(h => h.area)));
+      if (areas.length > 0 && (!selectedArea || !areas.includes(selectedArea))) {
+        setSelectedArea(areas[0]);
+      }
+    } else {
+      setSelectedArea("");
+    }
+  }, [selectedCity, hospitalsList]);
+
   // Toggle medicine reminder
   const handleToggleReminder = async (id: string) => {
-    const allReminders = await MockDB.getReminders();
+    const allReminders = await Database.getReminders();
     const updated = allReminders.map(r => {
       if (r.id === id) {
         return { ...r, taken: !r.taken };
       }
       return r;
     });
-    await MockDB.saveReminders(updated);
+    await Database.saveReminders(updated);
     setReminders(updated.filter(r => r.patient_id === user.id));
   };
 
@@ -110,33 +172,34 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
       return;
     }
 
-    const hospitals = await MockDB.getHospitals();
+    const hospitals = await Database.getHospitals();
     const hospital = hospitals.find(h => h.id === selectedHospitalId);
     
-    const doctors = await MockDB.getDoctors();
+    const doctors = await Database.getDoctors();
     const docExt = doctors.find(d => d.id === selectedDoctorId);
-    const docProfile = (await MockDB.getProfiles()).find(p => p.id === selectedDoctorId);
+    const docProfile = (await Database.getProfiles()).find(p => p.id === selectedDoctorId);
 
     if (!hospital || !docExt || !docProfile) {
       alert("Invalid selection config error.");
       return;
     }
 
-    const slots = getDoctorSlots(docExt);
-    const slotIndex = slots.indexOf(selectedTimeSlot);
-    const tokenVal = slotIndex !== -1 ? slotIndex + 1 : 1;
+    // Get dynamic token index and time slots
+    const slotsObj = getDoctorSlots(selectedDoctorId, selectedDate);
+    const matchedSlot = slotsObj.find(s => s.time === selectedTimeSlot);
+    const tokenVal = matchedSlot ? matchedSlot.token : 1;
 
-    const appts = await MockDB.getAppointments();
+    const appts = await Database.getAppointments();
 
     const newAppointment: Appointment = {
-      id: "apt-" + Math.random().toString(36).substring(2, 9),
+      id: crypto.randomUUID(),
       patient_id: user.id,
-      patient_name: profile?.full_name || "Sarah Jenkins",
+      patient_name: profile?.full_name || "Unknown Patient",
       doctor_id: selectedDoctorId,
       doctor_name: docProfile.full_name,
       doctor_specialization: docExt.specialization,
       hospital_id: hospital.id,
-      hospital_name: hospital.name,
+      hospital_name: hospital.hospital_name,
       date: selectedDate,
       time: selectedTimeSlot,
       token: tokenVal,
@@ -145,30 +208,38 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     };
 
     appts.unshift(newAppointment);
-    await MockDB.saveAppointments(appts);
+    await Database.saveAppointments(appts);
 
-    // Save notification
-    await MockDB.addNotification(user.id, "Appointment Placed", `Your appointment token #${tokenVal} under ${docProfile.full_name} is confirmed.`);
+    // Log status change to audit logs
+    await Database.logAppointmentStatusChange(newAppointment.id, null, AppointmentStatus.BOOKED, user.id);
+
+    // Save notification with type APPOINTMENT
+    await Database.addNotification(
+      user.id,
+      "Appointment Placed",
+      `Your appointment token #${tokenVal} under ${docProfile.full_name} is confirmed.`,
+      "APPOINTMENT"
+    );
     
     // Create automatic private chat with doctor if none exists
-    const currentChats = await MockDB.getChats();
+    const currentChats = await Database.getChats();
     const existing = currentChats.find(c => 
       (c.participant1_id === user.id && c.participant2_id === selectedDoctorId) ||
       (c.participant1_id === selectedDoctorId && c.participant2_id === user.id)
     );
     if (!existing) {
       const activeChat: Chat = {
-        id: "chat-" + Math.random().toString(36).substring(2, 9),
+        id: crypto.randomUUID(),
         participant1_id: user.id,
         participant2_id: selectedDoctorId,
-        participant1_name: profile?.full_name || "Sarah Jenkins",
+        participant1_name: profile?.full_name || "Unknown Patient",
         participant2_name: docProfile.full_name,
         participant1_role: UserRole.PATIENT,
         participant2_role: UserRole.DOCTOR,
         created_at: new Date().toISOString()
       };
       currentChats.push(activeChat);
-      await MockDB.saveChats(currentChats);
+      await Database.saveChats(currentChats);
     }
 
     setBookingSuccess(true);
@@ -184,9 +255,9 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     e.preventDefault();
     if (!chatInput.trim() || !activeChatId) return;
 
-    const allMsgs = await MockDB.getMessages();
+    const allMsgs = await Database.getMessages();
     const newMsg: Message = {
-      id: "msg-" + Math.random().toString(36).substring(2, 9),
+      id: crypto.randomUUID(),
       chat_id: activeChatId,
       sender_id: user.id,
       text: chatInput,
@@ -195,25 +266,10 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     };
 
     allMsgs.push(newMsg);
-    await MockDB.saveMessages(allMsgs);
+    await Database.saveMessages(allMsgs);
     setChatInput("");
     loadDatabase();
 
-    // Mock chatbot simulated response after 1.5 seconds if patient chats to general clinic/doctor
-    setTimeout(async () => {
-      const updatedMessages = await MockDB.getMessages();
-      const botResponse: Message = {
-        id: "msg-reply-" + Math.random().toString(36).substring(2, 9),
-        chat_id: activeChatId,
-        sender_id: viewingChatPartnerId() || "u-doctor-chen",
-        text: "Thank you for the message. I have recorded your symptom state and will evaluate these during our upcoming scheduled consultation block. Please standby.",
-        read_status: false,
-        created_at: new Date().toISOString()
-      };
-      updatedMessages.push(botResponse);
-      await MockDB.saveMessages(updatedMessages);
-      loadDatabase();
-    }, 1500);
   };
 
   const viewingChatPartnerId = () => {
@@ -225,9 +281,15 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
   const currentChatMessages = messages.filter(m => m.chat_id === activeChatId);
   
   // Doctors and hospitals filter logic for Appointment Booking Form
-  const availableHospitals = hospitalsList.filter(h => h.approved);
+  const uniqueCities = Array.from(new Set(hospitalsList.filter(h => h.status === 'ACTIVE').map(h => h.city)));
+  const uniqueAreas = Array.from(new Set(hospitalsList.filter(h => h.status === 'ACTIVE' && h.city === selectedCity).map(h => h.area)));
+
+  const availableHospitals = hospitalsList.filter(h => 
+    h.status === 'ACTIVE' && 
+    h.city === selectedCity && 
+    h.area === selectedArea
+  );
   const availableDoctors = doctorsList.filter(d => 
-    d.approved &&
     d.hospital_id === selectedHospitalId &&
     d.specialization === selectedCategory
   );
@@ -237,42 +299,63 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
     return prof ? prof.full_name : "Doctor";
   };
 
-  const getDoctorSlots = (doc: DoctorExt) => {
-    const timings = doc.available_timings || '09:00-13:00,14:00-18:00';
-    const parts = timings.split(',');
-    const slots: string[] = [];
-    parts.forEach(part => {
-      const times = part.trim().split('-');
-      if (times.length === 2) {
-        const [start, end] = times;
-        const [startH, startM] = start.split(':').map(Number);
-        const [endH, endM] = end.split(':').map(Number);
-        let currentH = startH;
-        let currentM = startM;
-        while (currentH < endH || (currentH === endH && currentM < endM)) {
-          const timeStr = `${String(currentH).padStart(2, '0')}:${String(currentM).padStart(2, '0')}`;
-          slots.push(timeStr);
-          currentM += 15;
-          if (currentM >= 60) {
-            currentH += Math.floor(currentM / 60);
-            currentM = currentM % 60;
-          }
+  const getDoctorSlots = (doctorId: string, dateStr: string) => {
+    if (!dateStr) return [];
+    const date = new Date(dateStr);
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const selectedDayName = days[date.getDay()];
+    
+    const slots: { time: string; token: number }[] = [];
+    const matchingAvailabilities = availabilityList.filter(
+      a => a.doctor_id === doctorId && a.day_of_week === selectedDayName
+    );
+
+    let globalTokenCounter = 1;
+
+    matchingAvailabilities.forEach(avail => {
+      const startStr = avail.start_time; // e.g. "09:00:00"
+      const endStr = avail.end_time;     // e.g. "13:00:00"
+      const [startH, startM] = startStr.split(':').map(Number);
+      const [endH, endM] = endStr.split(':').map(Number);
+      
+      let interval = 15; // default 15 mins
+      if (avail.token_type === 'PER_HOUR') {
+        interval = Math.max(1, Math.floor(60 / avail.max_tokens));
+      }
+
+      let currentH = startH;
+      let currentM = startM;
+      let count = 0;
+
+      while (currentH < endH || (currentH === endH && currentM < endM)) {
+        if (avail.token_type === 'PER_DAY' && count >= avail.max_tokens) {
+          break;
+        }
+
+        const timeStr = `${String(currentH).padStart(2, '0')}:${String(currentM).padStart(2, '0')}`;
+        slots.push({ time: timeStr, token: globalTokenCounter++ });
+        count++;
+
+        currentM += interval;
+        if (currentM >= 60) {
+          currentH += Math.floor(currentM / 60);
+          currentM = currentM % 60;
         }
       }
     });
-    return slots.length > 0 ? slots : ["09:00", "10:00", "11:00", "14:00", "15:00", "16:00"];
+
+    return slots;
   };
 
-  const isDoctorAvailableOnDate = (doc: DoctorExt, dateStr: string) => {
+  const isDoctorAvailableOnDate = (doctorId: string, dateStr: string) => {
     if (!dateStr) return false;
     const date = new Date(dateStr);
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const selectedDayName = days[date.getDay()];
-    const availableDaysList = (doc.available_days || 'Monday,Tuesday,Wednesday,Thursday,Friday').split(',');
-    return availableDaysList.includes(selectedDayName);
+    return availabilityList.some(a => a.doctor_id === doctorId && a.day_of_week === selectedDayName);
   };
 
-  const hasNotifsCount = notifications.filter(n => !n.read).length;
+  const hasNotifsCount = notifications.filter(n => !n.is_read).length;
 
   // Print simulator
   const handlePrint = (title: string, content: string) => {
@@ -321,7 +404,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
               SJ
             </div>
             <div>
-              <h3 className="font-extrabold text-xs text-[#0b1c30]">{profile?.full_name || "Sarah Jenkins"}</h3>
+              <h3 className="font-extrabold text-xs text-[#0b1c30]">{profile?.full_name || "Patient"}</h3>
               <p className="text-[9px] text-[#0ea5e9] uppercase tracking-wide font-black">Patient Portal</p>
             </div>
           </div>
@@ -376,9 +459,9 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
             </span>
             <button 
               onClick={() => {
-                MockDB.getNotifications().then(async nots => {
-                  nots.forEach(n => { if (n.user_id === user.id) n.read = true; });
-                  await MockDB.saveNotifications(nots);
+                Database.getNotifications().then(async nots => {
+                  nots.forEach(n => { if (n.user_id === user.id) n.is_read = true; });
+                  await Database.saveNotifications(nots);
                   loadDatabase();
                 });
               }}
@@ -412,8 +495,8 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                   <span className="text-xs font-semibold">Blood Pressure</span>
                   <Heart className="w-4 h-4 text-rose-500" />
                 </div>
-                <div className="text-2xl font-black text-rose-600">120/80 <span className="text-xs text-[#3e4850]">mmHg</span></div>
-                <p className="text-[10px] text-slate-500 mt-1">Normal Level · Tracked 10 hours ago</p>
+                <div className="text-2xl font-black text-rose-600">--/-- <span className="text-xs text-[#3e4850]">mmHg</span></div>
+                <p className="text-[10px] text-slate-500 mt-1">No recorded data</p>
               </div>
 
               <div className="bg-white p-5 rounded-xl border border-[#bec8d2]/30 shadow-xs">
@@ -421,8 +504,8 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                   <span className="text-xs font-semibold">Pulse Rate</span>
                   <Activity className="w-4 h-4 text-teal-500" />
                 </div>
-                <div className="text-2xl font-black text-teal-600">72 <span className="text-xs text-[#3e4850]">bpm</span></div>
-                <p className="text-[10px] text-slate-500 mt-1">Normal Sinus Rhythm · ECG verified</p>
+                <div className="text-2xl font-black text-teal-600">-- <span className="text-xs text-[#3e4850]">bpm</span></div>
+                <p className="text-[10px] text-slate-500 mt-1">No recorded data</p>
               </div>
 
               <div className="bg-white p-5 rounded-xl border border-[#bec8d2]/30 shadow-xs">
@@ -430,8 +513,8 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                   <span className="text-xs font-semibold">Height & Weight</span>
                   <Sparkles className="w-4 h-4 text-purple-500" />
                 </div>
-                <div className="text-2xl font-black text-purple-600">165cm / 58kg <span className="text-xs text-[#3e4850]"></span></div>
-                <p className="text-[10px] text-slate-500 mt-1">BMI 21.3 (HEALTHY RANGE)</p>
+                <div className="text-2xl font-black text-purple-600">--cm / --kg <span className="text-xs text-[#3e4850]"></span></div>
+                <p className="text-[10px] text-slate-500 mt-1">No recorded data</p>
               </div>
             </div>
 
@@ -545,11 +628,14 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                     <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Step 1: Select City</label>
                     <select 
                       value={selectedCity} 
-                      onChange={(e) => setSelectedCity(e.target.value)}
+                      onChange={(e) => { setSelectedCity(e.target.value); setSelectedHospitalId(""); setSelectedDoctorId(""); }}
                       className="w-full px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
                     >
-                      <option value="Seattle">Seattle</option>
-                      <option value="Bellevue">Bellevue</option>
+                      {uniqueCities.length === 0 ? (
+                        <option value="">-- No Approved Cities --</option>
+                      ) : (
+                        uniqueCities.map(c => <option key={c} value={c}>{c}</option>)
+                      )}
                     </select>
                   </div>
 
@@ -558,12 +644,14 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                     <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Step 2: Select Area</label>
                     <select 
                       value={selectedArea} 
-                      onChange={(e) => setSelectedArea(e.target.value)}
+                      onChange={(e) => { setSelectedArea(e.target.value); setSelectedHospitalId(""); setSelectedDoctorId(""); }}
                       className="w-full px-3 py-2 border border-[#bec8d2] bg-white rounded text-xs focus:outline-none"
                     >
-                      <option value="Downtown">Downtown</option>
-                      <option value="Emerald District">Emerald District</option>
-                      <option value="Central Bellevue">Central Bellevue</option>
+                      {uniqueAreas.length === 0 ? (
+                        <option value="">-- No Approved Areas --</option>
+                      ) : (
+                        uniqueAreas.map(a => <option key={a} value={a}>{a}</option>)
+                      )}
                     </select>
                   </div>
                 </div>
@@ -578,7 +666,7 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                   >
                     <option value="">-- Click to choose clinical facility on region --</option>
                     {availableHospitals.map(h => (
-                      <option key={h.id} value={h.id}>{h.name} ({h.address}, {h.area})</option>
+                      <option key={h.id} value={h.id}>{h.hospital_name} ({h.address}, {h.area})</option>
                     ))}
                   </select>
                 </div>
@@ -641,46 +729,45 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                     {(() => {
                       const doc = doctorsList.find(d => d.id === selectedDoctorId);
                       if (!doc) return null;
-                      const isAvailable = isDoctorAvailableOnDate(doc, selectedDate);
+                      const isAvailable = isDoctorAvailableOnDate(selectedDoctorId, selectedDate);
                       
                       if (!isAvailable) {
                         return (
                           <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3 rounded-lg text-xs font-semibold">
-                            ⚠️ Doctor is not available on this day of the week. Please select another date. (Available: {doc.available_days || 'Monday-Friday'})
+                            ⚠️ Doctor is not available on this day of the week. Please select another date.
                           </div>
                         );
                       }
 
-                      const slots = getDoctorSlots(doc);
+                      const slots = getDoctorSlots(selectedDoctorId, selectedDate);
                       
                       return (
                         <div className="bg-[#f8f9ff] p-4 rounded-lg border border-teal-200">
                           <label className="block text-[10px] font-black text-[#006591] uppercase mb-2">Step 7: Choose Time & Token Slot</label>
                           <div className="flex flex-wrap gap-2 text-center">
-                            {slots.map((time, idx) => {
-                              const tokenNumber = idx + 1;
+                            {slots.map((slot) => {
                               const isBooked = appointments.some(a => 
                                 a.doctor_id === selectedDoctorId && 
                                 a.date === selectedDate && 
-                                a.time === time && 
+                                a.time === slot.time && 
                                 a.status !== AppointmentStatus.CANCELLED
                               );
 
                               return (
                                 <button
-                                  key={time}
+                                  key={slot.time}
                                   type="button"
                                   disabled={isBooked}
-                                  onClick={() => setSelectedTimeSlot(time)}
+                                  onClick={() => setSelectedTimeSlot(slot.time)}
                                   className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
                                     isBooked 
                                       ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed" 
-                                      : selectedTimeSlot === time 
+                                      : selectedTimeSlot === slot.time 
                                         ? "bg-teal-600 text-white border-teal-600" 
                                         : "bg-white text-slate-700 hover:bg-slate-50 border-[#bec8d2]"
                                   }`}
                                 >
-                                  {time} {isBooked ? "(Booked)" : `(Token #${tokenNumber})`}
+                                  {slot.time} {isBooked ? "(Booked)" : `(Token #${slot.token})`}
                                 </button>
                               );
                             })}
@@ -758,9 +845,9 @@ export default function DashboardPatient({ user, onLogout }: PatientProps) {
                         {apt.status === "BOOKED" && (
                           <button 
                             onClick={async () => {
-                              const appts = await MockDB.getAppointments();
+                              const appts = await Database.getAppointments();
                               const updated = appts.map(a => a.id === apt.id ? { ...a, status: AppointmentStatus.CANCELLED } : a);
-                              await MockDB.saveAppointments(updated);
+                              await Database.saveAppointments(updated);
                               loadDatabase();
                             }}
                             className="text-[10px] text-red-500 hover:underline hover:text-red-700"

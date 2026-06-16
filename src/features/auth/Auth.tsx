@@ -1,7 +1,7 @@
 import React, { useState } from "react";
-import { UserRole, Hospital } from "./types";
-import { MockDB } from "./mockData";
-import { supabase } from "./supabaseClient";
+import { UserRole, Hospital } from "../../types";
+import { Database } from "../../api";
+import { supabase } from "../../supabaseClient";
 import { 
   Building, User, ShieldAlert, BadgeInfo, KeyRound, 
   Mail, Phone, Lock, Eye, EyeOff, CalendarCheck2, ArrowRight, ShieldCheck, CheckCircle2
@@ -47,7 +47,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
   // Simulated OTP flow variables
   const [showOtpScreen, setShowOtpScreen] = useState(false);
   const [otpValue, setOtpValue] = useState("");
-  const [pendingPatientFields, setPendingPatientFields] = useState<any>(null);
+  const [pendingRoleFields, setPendingRoleFields] = useState<any>(null);
 
   React.useEffect(() => {
     if (initialMode) {
@@ -73,10 +73,10 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
   // Hospital Fields
   const [hospitalName, setHospitalName] = useState("");
   const [addressHosp, setAddressHosp] = useState("");
-  const [city, setCity] = useState("Seattle");
-  const [area, setArea] = useState("Downtown");
-  const [stateCode, setStateCode] = useState("WA");
-  const [pincode, setPincode] = useState("98101");
+  const [city, setCity] = useState("Chennai");
+  const [area, setArea] = useState("Tambaram");
+  const [stateCode, setStateCode] = useState("TN");
+  const [pincode, setPincode] = useState("600045");
 
   // Doctor Fields
   const [licenseNumber, setLicenseNumber] = useState("");
@@ -89,7 +89,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
   const [hospitalsList, setHospitalsList] = useState<Hospital[]>([]);
 
   React.useEffect(() => {
-    MockDB.getHospitals().then(setHospitalsList);
+    Database.getHospitals().then(setHospitalsList);
   }, []);
 
   const handleGoogleSignIn = async () => {
@@ -140,20 +140,6 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
         .maybeSingle();
 
       if (dbErr || !dbUser) {
-        // Fallback: Check if it is the fixed main admin seeded manually
-        if (email.toLowerCase() === "pavaneshvuchuru@gmail.com" && loginRole === UserRole.MAIN_ADMIN) {
-          const fallbackUser = {
-            id: data.user.id,
-            email: email.trim(),
-            role: UserRole.MAIN_ADMIN,
-            status: "ACTIVE"
-          };
-          setSuccessMsg("Success! Secure session initiated. Redirecting...");
-          setTimeout(() => {
-            onLoginSuccess(fallbackUser);
-          }, 800);
-          return;
-        }
         setErrorMsg("Failed to fetch user profiles. Verify if database synchronization trigger executed.");
         await supabase.auth.signOut();
         return;
@@ -200,280 +186,59 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
     }
 
     try {
-      // 1. Patient OTP Form
-      if (registerRole === UserRole.PATIENT) {
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password: password,
-          options: {
-            data: {
-              role: UserRole.PATIENT,
-              full_name: fullName,
-              gender: gender,
-              dob: dob,
-              address: address
-            }
-          }
-        });
-
-        if (error) {
-          setErrorMsg(error.message);
-          return;
+      // Sign up via Supabase Auth
+      const signupOptions: any = {
+        data: {
+          role: UserRole.PATIENT,
+          full_name: fullName,
+          gender: gender,
+          dob: dob,
+          address: address
         }
+      };
 
-        if (data.session) {
-          setSuccessMsg("Success! Account created. Initializing session...");
-          let dbUser = null;
-          for (let i = 0; i < 5; i++) {
-            const { data: user } = await supabase
-              .from("users")
-              .select("*")
-              .eq("id", data.user!.id)
-              .maybeSingle();
-            if (user) {
-              dbUser = user;
-              break;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 500));
-          }
-          if (dbUser) {
-            setTimeout(() => {
-              onLoginSuccess(dbUser);
-            }, 800);
-            return;
-          } else {
-            setSuccessMsg("Registration successful! Redirecting to login...");
-            handleSubmitRedirect();
-            return;
-          }
-        }
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password: password,
+        options: signupOptions
+      });
 
-        setPendingPatientFields({
-          fullName,
-          email,
-          phone,
-          gender,
-          dob,
-          address,
-          password
-        });
-        setShowOtpScreen(true);
-        setSuccessMsg("Email/SMS verification protocol initialized. Code sent!");
+      if (error) {
+        setErrorMsg(error.message);
         return;
       }
 
-      // 2. Hospital Admin Register
-      if (registerRole === UserRole.HOSPITAL_ADMIN) {
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password: password,
-          options: {
-            data: {
-              role: UserRole.HOSPITAL_ADMIN,
-              full_name: fullName
-            }
-          }
-        });
-
-        if (error) {
-          setErrorMsg(error.message);
-          return;
-        }
-
-        if (!data.user) {
-          setErrorMsg("Signup succeeded but user session is empty.");
-          return;
-        }
-
-        // Create hospital first
-        const { data: hospital, error: hErr } = await supabase
-          .from("hospitals")
-          .insert({
-            name: hospitalName,
-            address: addressHosp,
-            city,
-            area,
-            state: stateCode,
-            pincode,
-            approved: false
-          })
-          .select()
-          .single();
-
-        if (hErr) {
-          setErrorMsg("Hospital Registration Error: " + hErr.message);
-          return;
-        }
-
-        // Link hospital admin
-        const { error: haErr } = await supabase
-          .from("hospital_admins")
-          .insert({
-            id: data.user.id,
-            hospital_id: hospital.id
-          });
-
-        if (haErr) {
-          setErrorMsg("Hospital Admin Link Error: " + haErr.message);
-          return;
-        }
-
-        setSuccessMsg("Success! Hospital Admin registered. Status: PENDING (Pending Main Admin approval). Redirecting to Login...");
-        handleSubmitRedirect();
+      if (!data.user) {
+        setErrorMsg("Signup succeeded but user is empty.");
+        return;
       }
 
-      // 3. Doctor Register
-      if (registerRole === UserRole.DOCTOR) {
-        const { data: hospital } = await supabase
-          .from("hospitals")
-          .select("id")
-          .ilike("name", hospitalName)
-          .maybeSingle();
+      // Store registration data in state to be inserted after OTP verification
+      setPendingRoleFields({
+        role: UserRole.PATIENT,
+        userId: data.user.id,
+        fullName,
+        email,
+        phone,
+        gender,
+        dob,
+        address,
+        hospitalName: "",
+        hospitalId: "",
+        addressHosp: "",
+        city: "",
+        area: "",
+        stateCode: "",
+        pincode: "",
+        licenseNumber: "",
+        specialization: "",
+        experience: "",
+        qualification: ""
+      });
 
-        const hospitalId = hospital?.id;
-        if (!hospitalId) {
-          setErrorMsg(`Hospital "${hospitalName}" is not registered on the CareFlow platform. Please contact Main Admin.`);
-          return;
-        }
-
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password: password,
-          options: {
-            data: {
-              role: UserRole.DOCTOR,
-              full_name: fullName
-            }
-          }
-        });
-
-        if (error) {
-          setErrorMsg(error.message);
-          return;
-        }
-
-        if (!data.user) return;
-
-        const { error: docErr } = await supabase
-          .from("doctors")
-          .insert({
-            id: data.user.id,
-            license_number: licenseNumber,
-            specialization,
-            experience: parseInt(experience) || 0,
-            hospital_id: hospitalId,
-            city,
-            area,
-            approved: false
-          });
-
-        if (docErr) {
-          setErrorMsg("Doctor Profile Registration Error: " + docErr.message);
-          return;
-        }
-
-        setSuccessMsg("Clinician application submitted! Status: PENDING (Approval required from corresponding Hospital Admin). Redirecting to Login...");
-        handleSubmitRedirect();
-      }
-
-      // 4. Receptionist Register
-      if (registerRole === UserRole.RECEPTIONIST) {
-        const { data: hospital } = await supabase
-          .from("hospitals")
-          .select("id")
-          .ilike("name", hospitalName)
-          .maybeSingle();
-
-        const hospitalId = hospital?.id;
-        if (!hospitalId) {
-          setErrorMsg(`Hospital "${hospitalName}" is not registered on the CareFlow platform.`);
-          return;
-        }
-
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password: password,
-          options: {
-            data: {
-              role: UserRole.RECEPTIONIST,
-              full_name: fullName
-            }
-          }
-        });
-
-        if (error) {
-          setErrorMsg(error.message);
-          return;
-        }
-
-        if (!data.user) return;
-
-        const { error: recepErr } = await supabase
-          .from("receptionists")
-          .insert({
-            id: data.user.id,
-            hospital_id: hospitalId,
-            approved: false
-          });
-
-        if (recepErr) {
-          setErrorMsg("Receptionist Profile Error: " + recepErr.message);
-          return;
-        }
-
-        setSuccessMsg("Staff registration submitted! Status: PENDING (Hospital Admin approval requested). Redirecting to Login...");
-        handleSubmitRedirect();
-      }
-
-      // 5. Lab Tech Register
-      if (registerRole === UserRole.LAB_TECHNICIAN) {
-        const { data: hospital } = await supabase
-          .from("hospitals")
-          .select("id")
-          .ilike("name", hospitalName)
-          .maybeSingle();
-
-        const hospitalId = hospital?.id;
-        if (!hospitalId) {
-          setErrorMsg(`Hospital "${hospitalName}" is not registered on the CareFlow platform.`);
-          return;
-        }
-
-        const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password: password,
-          options: {
-            data: {
-              role: UserRole.LAB_TECHNICIAN,
-              full_name: fullName
-            }
-          }
-        });
-
-        if (error) {
-          setErrorMsg(error.message);
-          return;
-        }
-
-        if (!data.user) return;
-
-        const { error: labErr } = await supabase
-          .from("lab_technicians")
-          .insert({
-            id: data.user.id,
-            qualification,
-            hospital_id: hospitalId,
-            approved: false
-          });
-
-        if (labErr) {
-          setErrorMsg("Lab Technician Profile Error: " + labErr.message);
-          return;
-        }
-
-        setSuccessMsg("Lab Specialist registered! Status: PENDING (Hospital Admin approval requested). Redirecting to Login...");
-        handleSubmitRedirect();
-      }
+      // Show OTP verification screen
+      setShowOtpScreen(true);
+      setSuccessMsg("Verification protocol initialized. A code has been sent to your email!");
     } catch (err: any) {
       setErrorMsg(err.message || "An unexpected error occurred during signup.");
     }
@@ -483,6 +248,11 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
     e.preventDefault();
     setErrorMsg("");
     setSuccessMsg("");
+
+    if (!pendingRoleFields) {
+      setErrorMsg("No pending registration session found.");
+      return;
+    }
 
     try {
       const { data, error } = await supabase.auth.verifyOtp({
@@ -497,12 +267,14 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
       }
 
       alert("Verification Success! Welcome to CareFlow!");
+
+      // Success complete reset states
       setShowOtpScreen(false);
-      setPendingPatientFields(null);
+      setPendingRoleFields(null);
       setActiveMode("login");
       setLoginRole(UserRole.PATIENT);
       setEmail(email.trim());
-      setPassword(password);
+      setPassword("");
     } catch (err: any) {
       setErrorMsg(err.message || "OTP verification error.");
     }
@@ -626,7 +398,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
               </p>
               
               <div className="bg-[#eff4ff] border border-[#d3e4fe] p-2.5 rounded text-[10px] text-center font-mono my-2 text-slate-600">
-                [SIMULATOR]: Enter <strong>123456</strong> as the OTP code
+                Please check your inbox or spam folder for the code.
               </div>
 
               <div className="flex flex-col gap-1 text-left">
@@ -841,34 +613,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
           ) : (
             /* --- REGISTER MODE --- */
             <form onSubmit={handleRegisterSubmit} className="flex flex-col gap-4">
-              {/* Select registration role tab */}
-              <div>
-                <label className="block text-[10px] font-extrabold text-[#3e4850] uppercase mb-1.5 text-center">
-                  Select System Role to Apply
-                </label>
-                <div className="grid grid-cols-5 gap-1 bg-stone-50 p-1 rounded border border-[#bec8d2]/30">
-                  {[
-                    { role: UserRole.PATIENT, label: "Patient" },
-                    { role: UserRole.DOCTOR, label: "Doctor" },
-                    { role: UserRole.RECEPTIONIST, label: "Reception" },
-                    { role: UserRole.LAB_TECHNICIAN, label: "Lab Tech" },
-                    { role: UserRole.HOSPITAL_ADMIN, label: "Hosp Admin" }
-                  ].map((r) => (
-                    <button
-                      key={r.role}
-                      type="button"
-                      onClick={() => setRegisterRole(r.role)}
-                      className={`py-2 text-[8px] font-black rounded transition-all uppercase leading-none ${
-                        registerRole === r.role 
-                          ? "bg-[#0ea5e9] text-white shadow-xs" 
-                          : "text-slate-600 hover:bg-slate-100"
-                      }`}
-                    >
-                      {r.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {/* Patient Registration Flow */}
 
               {/* SHARED REQUIRED FIELDS */}
               <div className="grid grid-cols-2 gap-3">
@@ -1078,7 +823,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
                     >
                       <option value="">-- Associate Clinic --</option>
                       {hospitalsList.map(h => (
-                        <option key={h.id} value={h.name}>{h.name} ({h.city})</option>
+                        <option key={h.id} value={h.hospital_name}>{h.hospital_name} ({h.city})</option>
                       ))}
                     </select>
                   </div>
@@ -1153,7 +898,7 @@ export default function Auth({ onLoginSuccess, onNavigateLanding, initialMode }:
                     >
                       <option value="">-- Select Associate Hospital --</option>
                       {hospitalsList.map(h => (
-                        <option key={h.id} value={h.name}>{h.name}</option>
+                        <option key={h.id} value={h.hospital_name}>{h.hospital_name}</option>
                       ))}
                     </select>
                   </div>

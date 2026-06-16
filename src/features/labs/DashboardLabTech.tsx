@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { MockDB } from "./mockData";
-import { User, LabRequest, LabReport, LabRequestStatus } from "./types";
+import { Database } from "../../api";
+import { User, LabRequest, LabReport, LabRequestStatus } from "../../types";
 import { 
   Activity, Clipboard, CheckSquare, Sparkles, Send, FileText, 
   MapPin, LogOut, CheckCircle2, ChevronRight, AlertCircle 
@@ -30,8 +30,8 @@ export default function DashboardLabTech({ user, onLogout }: LabTechProps) {
 
   const loadDatabase = async () => {
     // Lab Tech sees clinic requests
-    const reqs = await MockDB.getLabRequests();
-    const reps = await MockDB.getLabReports();
+    const reqs = await Database.getLabRequests();
+    const reps = await Database.getLabReports();
     
     setLabRequests(reqs);
     setLabReports(reps);
@@ -48,7 +48,7 @@ export default function DashboardLabTech({ user, onLogout }: LabTechProps) {
     }
 
     // 1. Create Report
-    const repId = "labrep-" + Math.random().toString(36).substring(2, 9);
+    const repId = crypto.randomUUID();
     const newReport: LabReport = {
       id: repId,
       request_id: activeRequest.id,
@@ -61,22 +61,22 @@ export default function DashboardLabTech({ user, onLogout }: LabTechProps) {
       created_at: new Date().toISOString()
     };
 
-    const currentReports = await MockDB.getLabReports();
+    const currentReports = await Database.getLabReports();
     currentReports.unshift(newReport);
-    await MockDB.saveLabReports(currentReports);
+    await Database.saveLabReports(currentReports);
 
     // 2. Mark request completed
-    const currentRequests = await MockDB.getLabRequests();
+    const currentRequests = await Database.getLabRequests();
     const updated = currentRequests.map(r => {
       if (r.id === activeRequest.id) {
         return { ...r, status: LabRequestStatus.COMPLETED };
       }
       return r;
     });
-    await MockDB.saveLabRequests(updated);
+    await Database.saveLabRequests(updated);
 
     // 3. Notify doctor and patient
-    await MockDB.addNotification(activeRequest.patient_id, "Diagnostic Lab Report Published", `Your results for ${activeRequest.test_name} have been finalized and are available in your portal.`);
+    await Database.addNotification(activeRequest.patient_id, "Diagnostic Lab Report Published", `Your results for ${activeRequest.test_name} have been finalized and are available in your portal.`);
     
     setPublishSuccess(true);
     setResultsText("");
@@ -103,7 +103,7 @@ export default function DashboardLabTech({ user, onLogout }: LabTechProps) {
               LB
             </div>
             <div>
-              <h3 className="font-extrabold text-xs text-[#0b1c30]">Tobias Funke</h3>
+              <h3 className="font-extrabold text-xs text-[#0b1c30]">Technician</h3>
               <p className="text-[9px] text-[#0ea5e9] uppercase tracking-wide font-black font-mono">Specialist Technician</p>
             </div>
           </div>

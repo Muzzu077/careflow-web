@@ -5,15 +5,15 @@
 
 import React, { useState, useEffect } from "react";
 import { User, UserRole } from "./types";
-import { MockDB } from "./mockData";
+import { Database } from "./api";
 import Landing from "./landing";
-import Auth from "./auth";
-import DashboardPatient from "./dashboardPatient";
-import DashboardDoctor from "./dashboardDoctor";
-import DashboardReceptionist from "./dashboardReceptionist";
-import DashboardLabTech from "./dashboardLabTech";
-import DashboardHospitalAdmin from "./dashboardHospitalAdmin";
-import DashboardMainAdmin from "./dashboardMainAdmin";
+import Auth from "./features/auth/Auth";
+import DashboardPatient from "./features/patients/DashboardPatient";
+import DashboardDoctor from "./features/doctors/DashboardDoctor";
+import DashboardReceptionist from "./features/appointments/DashboardReceptionist";
+import DashboardLabTech from "./features/labs/DashboardLabTech";
+import DashboardHospitalAdmin from "./features/hospitals/DashboardHospitalAdmin";
+import DashboardMainAdmin from "./features/hospitals/DashboardMainAdmin";
 import { getResponseFromAI, ChatMessage } from "./chatbotService";
 import { supabase } from "./supabaseClient";
 
@@ -24,7 +24,7 @@ import {
 
 export default function App() {
   // Navigation: 'home' | 'login' | 'register-patient' | 'portal'
-  const [currentView, setCurrentView] = useState<"home" | "login" | "register-patient" | "portal">("home");
+  const [currentView, setCurrentView] = useState<"home" | "login" | "register-patient" | "portal" | "reset-password">("home");
   
   // Active user session
   const [currentUser, setCurrentUser] = useState<User | null>(null);

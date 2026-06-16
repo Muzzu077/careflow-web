@@ -151,7 +151,7 @@ export default function Landing({ onNavigate, onOpenChatBot }: LandingProps) {
               </div>
             </div>
 
-            {/* Mock Triage Chatbox UI */}
+            {/* AI Triage Chatbox UI */}
             <div className="md:w-1/2 bg-[#f8f9ff] rounded-xl border border-[#bec8d2] flex flex-col overflow-hidden min-h-[300px]">
               <div className="bg-[#006591] text-white px-4 py-3 font-semibold text-xs flex items-center justify-between">
                 <span>CareFlow Pre-Login Triage Chat</span>
